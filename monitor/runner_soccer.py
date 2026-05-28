@@ -139,7 +139,9 @@ def run_soccer() -> None:
         
         fiat_games = {}
         now_utc = datetime.now(timezone.utc)
-        cutoff_date = now_utc + timedelta(hours=80)
+        cutoff_date = now_utc + timedelta(days=45)
+        logger.info(f"   [INFO] Odds API returned {len(raw_odds)} World Cup events.")
+        logger.info(f"   [INFO] Polymarket returned {len(raw_poly)} active events.")
 
         for game in raw_odds:
             commence_str = game.get('commence_time')
@@ -189,6 +191,7 @@ def run_soccer() -> None:
                             b_data["btts"][nm.lower()] = Decimal(str(pr))
                 if b_data["h2h"] or b_data["totals"] or b_data["btts"]:
                     fiat_games[k]["bookies"].append(b_data)
+        logger.info(f"   [INFO] Built {len(fiat_games)} fiat World Cup games inside 45-day window.")
 
         opportunities, fiat_opportunities = [], []
         for gk, x in fiat_games.items():
@@ -210,6 +213,7 @@ def run_soccer() -> None:
                 if target: break
                         
             if not target: 
+                logger.info(f"   [ML] Polymarket | Status: ❌ No matching market found")
                 continue
             
             for b in x["bookies"]:
@@ -239,10 +243,10 @@ def run_soccer() -> None:
                                         
                                         if hedge.passes_liquidity_filter:
                                             roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
-                                            logger.info(f"   [DC-NO]  {b['name']:<10} | Buy Poly: NO {team_in_q[:7]} ({poly_price:<5}) | Bet Fiat: {team_in_q[:7]} Win ({float(f_opp):<4.2f}) | ROI: {roi}% | ✅")
+                                            logger.info(f"   [DC-NO]  {b['name']:<10} | Buy Poly: NO {team_in_q[:7]} ({poly_price:<5}) | Bet Fiat: {team_in_q[:7]} Win ({float(f_opp):<4.2f}) | Status: ✅ ROI {roi}%")
                                             if 0 < roi < 15.0: opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "Fiat Win vs Poly NO", f"NO {team_in_q}", f"{team_in_q} to Win", roi, 0.0, 0.0))
                                         else:
-                                            logger.info(f"   [DC-NO]  {b['name']:<10} | Buy Poly: NO {team_in_q[:7]} ({poly_price:<5}) | Bet Fiat: {team_in_q[:7]} Win ({float(f_opp):<4.2f}) | ❌ {hedge.reject_reason}")
+                                            logger.info(f"   [DC-NO]  {b['name']:<10} | Buy Poly: NO {team_in_q[:7]} ({poly_price:<5}) | Bet Fiat: {team_in_q[:7]} Win ({float(f_opp):<4.2f}) | Status: ❌ {hedge.reject_reason}")
                                             
                                 elif out_lbl == 'yes':
                                     poly_tok = toks[idx]
@@ -257,10 +261,10 @@ def run_soccer() -> None:
                                         
                                         if hedge.passes_liquidity_filter:
                                             roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
-                                            logger.info(f"   [DC-YES] {b['name']:<10} | Buy Poly: YES {team_in_q[:7]} ({poly_price:<5}) | Bet Fiat: Draw or {opp_nk[:7]} ({float(dc_odds):<4.2f}) | ROI: {roi}% | ✅")
+                                            logger.info(f"   [DC-YES] {b['name']:<10} | Buy Poly: YES {team_in_q[:7]} ({poly_price:<5}) | Bet Fiat: Draw or {opp_nk[:7]} ({float(dc_odds):<4.2f}) | Status: ✅ ROI {roi}%")
                                             if 0 < roi < 15.0: opportunities.append(_build_opp(x, b["name"], dc_odds, hedge, "Fiat Dutched DC vs Poly YES", f"YES {team_in_q}", f"Draw or {opp_nk}", roi, 0.0, 0.0))
                                         else:
-                                            logger.info(f"   [DC-YES] {b['name']:<10} | Buy Poly: YES {team_in_q[:7]} ({poly_price:<5}) | Bet Fiat: Draw or {opp_nk[:7]} ({float(dc_odds):<4.2f}) | ❌ {hedge.reject_reason}")
+                                            logger.info(f"   [DC-YES] {b['name']:<10} | Buy Poly: YES {team_in_q[:7]} ({poly_price:<5}) | Bet Fiat: Draw or {opp_nk[:7]} ({float(dc_odds):<4.2f}) | Status: ❌ {hedge.reject_reason}")
 
                     elif 'both teams' in question and 'score' in question:
                         fiat_yes, fiat_no = b["btts"].get('yes'), b["btts"].get('no')
@@ -278,10 +282,10 @@ def run_soccer() -> None:
 
                                 if hedge.passes_liquidity_filter:
                                     roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
-                                    logger.info(f"   [BTTS]   {b['name']:<10} | Buy Poly: {poly_side:<10} ({poly_price:<5}) | Bet Fiat: {fiat_side:<10} ({float(f_opp):<4.2f}) | ROI: {roi}% | ✅")
+                                    logger.info(f"   [BTTS]   {b['name']:<10} | Buy Poly: {poly_side:<10} ({poly_price:<5}) | Bet Fiat: {fiat_side:<10} ({float(f_opp):<4.2f}) | Status: ✅ ROI {roi}%")
                                     if 0 < roi < 15.0: opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "Both Teams to Score", poly_side, fiat_side, roi, 0.0, 0.0))
                                 else:
-                                    logger.info(f"   [BTTS]   {b['name']:<10} | Buy Poly: {poly_side:<10} ({poly_price:<5}) | Bet Fiat: {fiat_side:<10} ({float(f_opp):<4.2f}) | ❌ {hedge.reject_reason}")
+                                    logger.info(f"   [BTTS]   {b['name']:<10} | Buy Poly: {poly_side:<10} ({poly_price:<5}) | Bet Fiat: {fiat_side:<10} ({float(f_opp):<4.2f}) | Status: ❌ {hedge.reject_reason}")
 
                     elif 'over' in question or 'under' in question or 'goals' in question:
                         line_match = re.search(r'(\d+\.5)', question)
@@ -303,10 +307,10 @@ def run_soccer() -> None:
                                 
                                 if hedge.passes_liquidity_filter:
                                     roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
-                                    logger.info(f"   [TOT]    {b['name']:<10} | Buy Poly: {poly_side[:10]:<10} ({poly_price:<5}) | Bet Fiat: {fiat_side[:10]:<10} ({float(f_opp):<4.2f}) | ROI: {roi}% | ✅")
+                                    logger.info(f"   [TOT]    {b['name']:<10} | Buy Poly: {poly_side[:10]:<10} ({poly_price:<5}) | Bet Fiat: {fiat_side[:10]:<10} ({float(f_opp):<4.2f}) | Status: ✅ ROI {roi}%")
                                     if 0 < roi < 15.0: opportunities.append(_build_opp(x, b["name"], f_opp, hedge, f"Total Goals {line}", poly_side, fiat_side, roi, 0.0, 0.0))
                                 else:
-                                    logger.info(f"   [TOT]    {b['name']:<10} | Buy Poly: {poly_side[:10]:<10} ({poly_price:<5}) | Bet Fiat: {fiat_side[:10]:<10} ({float(f_opp):<4.2f}) | ❌ {hedge.reject_reason}")
+                                    logger.info(f"   [TOT]    {b['name']:<10} | Buy Poly: {poly_side[:10]:<10} ({poly_price:<5}) | Bet Fiat: {fiat_side[:10]:<10} ({float(f_opp):<4.2f}) | Status: ❌ {hedge.reject_reason}")
 
         logger.info("\n" + "="*80)
         final_alerts = build_soccer_global_alerts(opportunities, fiat_opportunities, limit=3)
