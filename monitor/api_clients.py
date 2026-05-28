@@ -133,36 +133,26 @@ class ApiClients:
 
     # --- SOCCER / FOOTBALL METHODS ---
     def get_soccer_fiat_data(self) -> list[dict[str, Any]]:
-        leagues = [
-            "soccer_epl",                   # Premier League
-            "soccer_spain_la_liga",         # La Liga
-            "soccer_germany_bundesliga",    # Bundesliga
-            "soccer_italy_serie_a",         # Serie A
-            "soccer_england_championship",  # English Championship
-            "soccer_uefa_champs_league",    # UEFA Champions League
-            "soccer_uefa_europa_league"     # UEFA Europa League
-        ]
-        all_data = []
-        for league in leagues:
-            url = f"https://api.the-odds-api.com/v4/sports/{league}/odds"
-            params = {
-                "apiKey": self.settings.odds_api_key,
-                "regions": "eu,us",
-                "markets": "h2h,totals",
-                "bookmakers": "pinnacle,onexbet,draftkings",
-            }
-            try:
-                data = self._get_json(url, params=params)
-                if isinstance(data, list): 
-                    all_data.extend(data)
-            except requests.exceptions.HTTPError as exc:
-                if exc.response is not None and exc.response.status_code == 404:
-                    logger.info(f"   [INFO] ⚽ {league} is currently inactive (404). Skipping safely...")
-                else:
-                    logger.error(f"Soccer Odds API request failed for {league}: {exc}")
-            except Exception as exc:
+        league = "soccer_fifa_world_cup"
+        url = f"https://api.the-odds-api.com/v4/sports/{league}/odds"
+        params = {
+            "apiKey": self.settings.odds_api_key,
+            "regions": "eu,us",
+            "markets": "h2h,totals,btts",
+            "bookmakers": "pinnacle,onexbet,draftkings",
+        }
+        try:
+            data = self._get_json(url, params=params)
+            if isinstance(data, list):
+                return data
+        except requests.exceptions.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                logger.info(f"   [INFO] ⚽ {league} is currently inactive (404). Skipping safely...")
+            else:
                 logger.error(f"Soccer Odds API request failed for {league}: {exc}")
-        return all_data
+        except Exception as exc:
+            logger.error(f"Soccer Odds API request failed for {league}: {exc}")
+        return []
 
     def get_soccer_polymarket_events(self) -> list[dict[str, Any]]:
         url = "https://gamma-api.polymarket.com/events"
