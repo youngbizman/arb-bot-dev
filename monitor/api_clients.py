@@ -137,13 +137,19 @@ class ApiClients:
         url = f"https://api.the-odds-api.com/v4/sports/{league}/odds"
         params = {
             "apiKey": self.settings.odds_api_key,
-            "regions": "eu,us",
-            "markets": "h2h,totals,btts",
+            "markets": "h2h,totals",
             "bookmakers": "pinnacle,onexbet,draftkings",
+            "oddsFormat": "decimal",
         }
         try:
             data = self._get_json(url, params=params)
             if isinstance(data, list):
+                for event in data:
+                    event_id = event.get("id")
+                    if not event_id:
+                        continue
+                    event_odds = self._get_soccer_event_odds(league, event_id, "btts")
+                    self._merge_event_markets(event, event_odds, {"btts"})
                 return data
         except requests.exceptions.HTTPError as exc:
             if exc.response is not None and exc.response.status_code == 404:
@@ -153,6 +159,56 @@ class ApiClients:
         except Exception as exc:
             logger.error(f"Soccer Odds API request failed for {league}: {exc}")
         return []
+
+    def _get_soccer_event_odds(self, league: str, event_id: str, markets: str) -> dict[str, Any]:
+        url = f"https://api.the-odds-api.com/v4/sports/{league}/events/{event_id}/odds"
+        params = {
+            "apiKey": self.settings.odds_api_key,
+            "markets": markets,
+            "bookmakers": "pinnacle,onexbet,draftkings",
+            "oddsFormat": "decimal",
+        }
+        try:
+            data = self._get_json(url, params=params)
+            return data if isinstance(data, dict) else {}
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "unknown"
+            logger.info(f"   [INFO] ⚽ Event odds unavailable for {event_id} ({markets}, HTTP {status}). Skipping...")
+        except Exception as exc:
+            logger.error(f"Soccer event odds request failed for {event_id} ({markets}): {exc}")
+        return {}
+
+    def _merge_event_markets(
+        self,
+        base_event: dict[str, Any],
+        event_odds: dict[str, Any],
+        market_keys: set[str],
+    ) -> None:
+        base_bookmakers = base_event.setdefault("bookmakers", [])
+        by_key = {b.get("key"): b for b in base_bookmakers if b.get("key")}
+
+        for event_bookmaker in event_odds.get("bookmakers", []):
+            markets = [m for m in event_bookmaker.get("markets", []) if m.get("key") in market_keys]
+            if not markets:
+                continue
+
+            bookmaker_key = event_bookmaker.get("key")
+            target = by_key.get(bookmaker_key)
+            if target is None:
+                target = {
+                    "key": bookmaker_key,
+                    "title": event_bookmaker.get("title"),
+                    "last_update": event_bookmaker.get("last_update"),
+                    "markets": [],
+                }
+                base_bookmakers.append(target)
+                if bookmaker_key:
+                    by_key[bookmaker_key] = target
+
+            target["markets"] = [
+                market for market in target.get("markets", []) if market.get("key") not in market_keys
+            ]
+            target["markets"].extend(markets)
 
     def get_soccer_polymarket_events(self) -> list[dict[str, Any]]:
         url = "https://gamma-api.polymarket.com/events"
