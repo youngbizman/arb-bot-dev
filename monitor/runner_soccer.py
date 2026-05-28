@@ -173,7 +173,7 @@ def run_soccer() -> None:
                     if not is_live and age_seconds > 1200: 
                         continue
 
-                b_data = {"name": b.get("title"), "h2h": {}, "totals": {}}
+                b_data = {"name": b.get("title"), "h2h": {}, "totals": {}, "btts": {}}
                 for m in b.get("markets", []):
                     mk = m.get('key')
                     for o in m.get('outcomes', []):
@@ -185,7 +185,9 @@ def run_soccer() -> None:
                             pt_float = float(pt)
                             if pt_float not in b_data["totals"]: b_data["totals"][pt_float] = {}
                             b_data["totals"][pt_float][nm.lower()] = Decimal(str(pr))
-                if b_data["h2h"]:
+                        elif mk == 'btts' and pr is not None:
+                            b_data["btts"][nm.lower()] = Decimal(str(pr))
+                if b_data["h2h"] or b_data["totals"] or b_data["btts"]:
                     fiat_games[k]["bookies"].append(b_data)
 
         opportunities, fiat_opportunities = [], []
@@ -259,6 +261,27 @@ def run_soccer() -> None:
                                             if 0 < roi < 15.0: opportunities.append(_build_opp(x, b["name"], dc_odds, hedge, "Fiat Dutched DC vs Poly YES", f"YES {team_in_q}", f"Draw or {opp_nk}", roi, 0.0, 0.0))
                                         else:
                                             logger.info(f"   [DC-YES] {b['name']:<10} | Buy Poly: YES {team_in_q[:7]} ({poly_price:<5}) | Bet Fiat: Draw or {opp_nk[:7]} ({float(dc_odds):<4.2f}) | ❌ {hedge.reject_reason}")
+
+                    elif 'both teams' in question and 'score' in question:
+                        fiat_yes, fiat_no = b["btts"].get('yes'), b["btts"].get('no')
+                        for idx, out_lbl in enumerate(outs):
+                            out_lbl, poly_tok = out_lbl.lower(), toks[idx]
+                            f_opp, poly_side, fiat_side = None, "", ""
+                            if out_lbl == 'yes' and fiat_no:
+                                f_opp, poly_side, fiat_side = fiat_no, "Yes", "No"
+                            elif out_lbl == 'no' and fiat_yes:
+                                f_opp, poly_side, fiat_side = fiat_yes, "No", "Yes"
+                            if f_opp:
+                                book = clients.get_clob_book(poly_tok)
+                                hedge = evaluate_buy_hedge_from_asks(book.get("asks", []), f_opp)
+                                poly_price = f"${float(hedge.best_ask):.2f}" if hedge.best_ask else "N/A"
+
+                                if hedge.passes_liquidity_filter:
+                                    roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
+                                    logger.info(f"   [BTTS]   {b['name']:<10} | Buy Poly: {poly_side:<10} ({poly_price:<5}) | Bet Fiat: {fiat_side:<10} ({float(f_opp):<4.2f}) | ROI: {roi}% | ✅")
+                                    if 0 < roi < 15.0: opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "Both Teams to Score", poly_side, fiat_side, roi, 0.0, 0.0))
+                                else:
+                                    logger.info(f"   [BTTS]   {b['name']:<10} | Buy Poly: {poly_side:<10} ({poly_price:<5}) | Bet Fiat: {fiat_side:<10} ({float(f_opp):<4.2f}) | ❌ {hedge.reject_reason}")
 
                     elif 'over' in question or 'under' in question or 'goals' in question:
                         line_match = re.search(r'(\d+\.5)', question)
