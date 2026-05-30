@@ -47,6 +47,15 @@ POPULAR_TENNIS_SPORT_KEYS = (
     "tennis_wta_stuttgart_open",
 )
 
+POPULAR_BASEBALL_SPORT_KEYS = (
+    "baseball_mlb",
+    "baseball_mlb_preseason",
+    "baseball_milb",
+    "baseball_npb",
+    "baseball_kbo",
+    "baseball_ncaa",
+)
+
 class ApiClients:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -228,6 +237,83 @@ class ApiClients:
             except Exception as exc:
                 logger.error(f"Tennis Polymarket pagination failed at offset {offset}: {exc}")
                 break
+        return all_events
+
+    # --- BASEBALL METHODS ---
+    def _get_active_baseball_sport_keys(self) -> set[str]:
+        url = "https://api.the-odds-api.com/v4/sports"
+        params = {"apiKey": self.settings.odds_api_key}
+        try:
+            data = self._get_json(url, params=params)
+            if isinstance(data, list):
+                return {str(row.get("key")) for row in data if str(row.get("key", "")).startswith("baseball_")}
+        except Exception as exc:
+            logger.warning(f"Baseball sports list request failed: {exc}")
+        return set()
+
+    def get_baseball_fiat_data(self) -> list[dict[str, Any]]:
+        active_keys = self._get_active_baseball_sport_keys()
+        sport_keys = [key for key in POPULAR_BASEBALL_SPORT_KEYS if not active_keys or key in active_keys]
+        all_events: list[dict[str, Any]] = []
+
+        for sport_key in sport_keys:
+            url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
+            params = {
+                "apiKey": self.settings.odds_api_key,
+                "regions": "eu,us",
+                "markets": "h2h,totals,spreads",
+                "bookmakers": "pinnacle,onexbet",
+                "oddsFormat": "decimal",
+            }
+            try:
+                data = self._get_json(url, params=params)
+                if isinstance(data, list):
+                    all_events.extend(data)
+                    logger.info(f"   [INFO] Baseball Odds API {sport_key}: {len(data)} events.")
+            except requests.exceptions.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 404:
+                    logger.info(f"   [INFO] Baseball league {sport_key} is inactive (404). Skipping...")
+                else:
+                    logger.error(f"Baseball Odds API request failed for {sport_key}: {exc}")
+            except Exception as exc:
+                logger.error(f"Baseball Odds API request failed for {sport_key}: {exc}")
+        return all_events
+
+    def get_baseball_polymarket_events(self) -> list[dict[str, Any]]:
+        url = "https://gamma-api.polymarket.com/events"
+        all_events = []
+        seen: set[str] = set()
+        sources = (("series_id", 3), ("tag_id", 102668))
+
+        for source_key, source_value in sources:
+            for offset in range(0, 5000, 100):
+                params = {
+                    source_key: source_value,
+                    "active": "true",
+                    "closed": "false",
+                    "limit": 100,
+                    "offset": offset,
+                }
+                try:
+                    data = self._get_json(url, params=params)
+                    if isinstance(data, list):
+                        events = data
+                    elif isinstance(data, dict):
+                        events = data.get("events", [])
+                    else:
+                        break
+
+                    for event in events:
+                        event_key = str(event.get("id") or event.get("slug") or event.get("title"))
+                        if event_key not in seen:
+                            seen.add(event_key)
+                            all_events.append(event)
+
+                    if len(events) < 100:
+                        break
+                except Exception as exc:
+                    logger.error(f"Baseball Polymarket pagination failed for {source_key}={source_value} at offset {offset}: {exc}")
+                    break
         return all_events
 
     # --- SOCCER / FOOTBALL METHODS ---
