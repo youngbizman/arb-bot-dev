@@ -189,7 +189,7 @@ def run_ufc() -> None:
                             imp = (Decimal("1")/o1) + (Decimal("1")/o2)
                             if imp < 1:
                                 roi = round(((1/float(imp))-1)*100, 2)
-                                if 0 < roi < 25.0:
+                                if 0 < roi < 6.0:
                                     fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1, o2, "Moneyline", t_nm, opp_nk, imp, roi))
                                     
                     for pt, t1_odds in b1.get("totals", {}).items():
@@ -201,12 +201,12 @@ def run_ufc() -> None:
                             imp = (Decimal("1")/o1_over) + (Decimal("1")/o2_under)
                             if imp < 1:
                                 roi = round(((1/float(imp))-1)*100, 2)
-                                if 0 < roi < 25.0: fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1_over, o2_under, f"Total Rounds {pt}", "Over", "Under", imp, roi))
+                                if 0 < roi < 6.0: fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1_over, o2_under, f"Total Rounds {pt}", "Over", "Under", imp, roi))
                         if o1_under and o2_over:
                             imp = (Decimal("1")/o1_under) + (Decimal("1")/o2_over)
                             if imp < 1:
                                 roi = round(((1/float(imp))-1)*100, 2)
-                                if 0 < roi < 25.0: fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1_under, o2_over, f"Total Rounds {pt}", "Under", "Over", imp, roi))
+                                if 0 < roi < 6.0: fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1_under, o2_over, f"Total Rounds {pt}", "Under", "Over", imp, roi))
 
             # 2. Poly Scanner (UFC - Deep Event Mapping)
             target_markets = []
@@ -259,10 +259,10 @@ def run_ufc() -> None:
                                     logger.info(f"   [ML] {b['name']:<12} | {t_nm[:10]:<10} | {b['name']} Opp: {float(f_opp):<5} | Poly Ask: {poly_price:<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
                                     if hedge.passes_liquidity_filter:
                                         roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
-                                        if 0 < roi < 25.0:
+                                        if 0 < roi < 6.0:
                                             opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "Moneyline", t_nm, opp_nk, roi, 0.0, 0.0))
 
-                    elif mt == 'round_over_under_match' or 'over/under' in market_context or 'total' in market_context or 'round' in mt:
+                    elif mt == 'totals' or mt == 'round_over_under_match' or 'o/u' in market_context or 'over/under' in market_context or 'total' in market_context or 'round' in market_context:
                         line_match = re.search(r'(\d+\.5)', market_context)
                         if not line_match: continue
                         line = float(line_match.group(1))
@@ -293,7 +293,7 @@ def run_ufc() -> None:
                                 logger.info(f"   [TOT] {b['name']:<11} | {poly_side[:10]:<10} | {b['name']} Opp: {float(f_opp):<5} | Poly Ask: {poly_price:<5} | Status: {'✅' if hedge.passes_liquidity_filter else '❌ ' + str(hedge.reject_reason)}")
                                 if hedge.passes_liquidity_filter:
                                     roi = round(float((hedge.locked_profit/hedge.total_outlay)*100), 2)
-                                    if 0 < roi < 25.0:
+                                    if 0 < roi < 6.0:
                                         opportunities.append(_build_opp(x, b["name"], f_opp, hedge, f"Total Rounds {line}", poly_side, fiat_side, roi, 0.0, 0.0))
 
         logger.info("\n" + "="*80)
