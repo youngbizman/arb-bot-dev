@@ -209,26 +209,25 @@ def run_ufc() -> None:
                                 if 0 < roi < 25.0: fiat_opportunities.append(_build_fiat_opp(x, b1["name"], b2["name"], o1_under, o2_over, f"Total Rounds {pt}", "Under", "Over", imp, roi))
 
             # 2. Poly Scanner (UFC - Deep Event Mapping)
-            target = None
+            target_markets = []
             for e in raw_poly:
                 # First check if the overarching Event title matches the fighters
                 if is_fighter_match(x["home"], x["away"], e.get('title', '')):
-                    target = e
-                    break
+                    for m in e.get('markets', []):
+                        target_markets.append((e, m))
+                    continue
                 # If not, check every single market inside the event (fixes the "UFC 302" grouping problem)
                 for m in e.get('markets', []):
                     market_text = f"{m.get('question', '')} {m.get('groupItemTitle', '')}"
                     if is_fighter_match(x["home"], x["away"], market_text):
-                        target = e
-                        break
-                if target: break
+                        target_markets.append((e, m))
                     
-            if not target: 
+            if not target_markets: 
                 logger.info(f"   [ML] Polymarket | Status: ❌ No matching market found")
                 continue
             
             for b in x["bookies"]:
-                for m in target.get('markets', []):
+                for target, m in target_markets:
                     if not m.get('acceptingOrders'): continue
                     
                     mt = str(m.get('sportsMarketType', '')).lower()
@@ -263,8 +262,8 @@ def run_ufc() -> None:
                                         if 0 < roi < 25.0:
                                             opportunities.append(_build_opp(x, b["name"], f_opp, hedge, "Moneyline", t_nm, opp_nk, roi, 0.0, 0.0))
 
-                    elif mt == 'round_over_under_match' or 'over/under' in question or 'total' in question:
-                        line_match = re.search(r'(\d+\.5)', question)
+                    elif mt == 'round_over_under_match' or 'over/under' in market_context or 'total' in market_context or 'round' in mt:
+                        line_match = re.search(r'(\d+\.5)', market_context)
                         if not line_match: continue
                         line = float(line_match.group(1))
 
