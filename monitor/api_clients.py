@@ -8,6 +8,45 @@ from .config import Settings
 
 logger = logging.getLogger(__name__)
 
+POPULAR_TENNIS_SPORT_KEYS = (
+    "tennis_atp_aus_open_singles",
+    "tennis_atp_french_open",
+    "tennis_atp_wimbledon",
+    "tennis_atp_us_open",
+    "tennis_atp_indian_wells",
+    "tennis_atp_miami_open",
+    "tennis_atp_monte_carlo_masters",
+    "tennis_atp_madrid_open",
+    "tennis_atp_italian_open",
+    "tennis_atp_canadian_open",
+    "tennis_atp_cincinnati_open",
+    "tennis_atp_shanghai_masters",
+    "tennis_atp_paris_masters",
+    "tennis_atp_barcelona_open",
+    "tennis_atp_hamburg_open",
+    "tennis_atp_dubai",
+    "tennis_atp_qatar_open",
+    "tennis_atp_munich",
+    "tennis_atp_china_open",
+    "tennis_wta_aus_open_singles",
+    "tennis_wta_french_open",
+    "tennis_wta_wimbledon",
+    "tennis_wta_us_open",
+    "tennis_wta_indian_wells",
+    "tennis_wta_miami_open",
+    "tennis_wta_madrid_open",
+    "tennis_wta_italian_open",
+    "tennis_wta_canadian_open",
+    "tennis_wta_cincinnati_open",
+    "tennis_wta_dubai",
+    "tennis_wta_qatar_open",
+    "tennis_wta_china_open",
+    "tennis_wta_wuhan_open",
+    "tennis_wta_charleston_open",
+    "tennis_wta_strasbourg",
+    "tennis_wta_stuttgart_open",
+)
+
 class ApiClients:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -128,6 +167,66 @@ class ApiClients:
                 else: break
             except Exception as exc:
                 logger.error(f"MMA Polymarket pagination failed at offset {offset}: {exc}")
+                break
+        return all_events
+
+    # --- TENNIS METHODS ---
+    def _get_active_tennis_sport_keys(self) -> set[str]:
+        url = "https://api.the-odds-api.com/v4/sports"
+        params = {"apiKey": self.settings.odds_api_key}
+        try:
+            data = self._get_json(url, params=params)
+            if isinstance(data, list):
+                return {str(row.get("key")) for row in data if str(row.get("key", "")).startswith("tennis_")}
+        except Exception as exc:
+            logger.warning(f"Tennis sports list request failed: {exc}")
+        return set()
+
+    def get_tennis_fiat_data(self) -> list[dict[str, Any]]:
+        active_keys = self._get_active_tennis_sport_keys()
+        sport_keys = [key for key in POPULAR_TENNIS_SPORT_KEYS if not active_keys or key in active_keys]
+        all_events: list[dict[str, Any]] = []
+
+        for sport_key in sport_keys:
+            url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
+            params = {
+                "apiKey": self.settings.odds_api_key,
+                "regions": "eu,us",
+                "markets": "h2h,totals,spreads",
+                "bookmakers": "pinnacle,onexbet",
+                "oddsFormat": "decimal",
+            }
+            try:
+                data = self._get_json(url, params=params)
+                if isinstance(data, list):
+                    all_events.extend(data)
+                    logger.info(f"   [INFO] Tennis Odds API {sport_key}: {len(data)} events.")
+            except requests.exceptions.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 404:
+                    logger.info(f"   [INFO] Tennis league {sport_key} is inactive (404). Skipping...")
+                else:
+                    logger.error(f"Tennis Odds API request failed for {sport_key}: {exc}")
+            except Exception as exc:
+                logger.error(f"Tennis Odds API request failed for {sport_key}: {exc}")
+        return all_events
+
+    def get_tennis_polymarket_events(self) -> list[dict[str, Any]]:
+        url = "https://gamma-api.polymarket.com/events"
+        all_events = []
+        for offset in range(0, 5000, 100):
+            params = {"tag_id": 864, "active": "true", "closed": "false", "limit": 100, "offset": offset}
+            try:
+                data = self._get_json(url, params=params)
+                if isinstance(data, list):
+                    all_events.extend(data)
+                    if len(data) < 100: break
+                elif isinstance(data, dict):
+                    events = data.get("events", [])
+                    all_events.extend(events)
+                    if len(events) < 100: break
+                else: break
+            except Exception as exc:
+                logger.error(f"Tennis Polymarket pagination failed at offset {offset}: {exc}")
                 break
         return all_events
 
