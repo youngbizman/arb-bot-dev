@@ -203,3 +203,49 @@ def format_tennis_fiat_opportunity_alert(op: FiatArbitrageOpportunity) -> str:
         f"▪️ Bet ${op.stake_2:.2f} on '{op.selection_2}' at {op.bookmaker_2} ({op.odds_2:.2f})\n\n"
         f"✅ GUARANTEED NET PROFIT: ${net_profit:.2f}"
     )
+
+# ==========================================
+# BASEBALL ALERT BUILDERS
+# ==========================================
+def build_baseball_global_alerts(poly_opps: list[ArbitrageOpportunity], fiat_opps: list[FiatArbitrageOpportunity], limit: int = 3) -> list[str]:
+    if limit <= 0: return []
+    all_opps = []
+    for o in poly_opps: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_baseball_opportunity_alert(o)})
+    for o in fiat_opps: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_baseball_fiat_opportunity_alert(o)})
+    sorted_opps = sorted(all_opps, key=lambda x: x['profit'], reverse=True)
+
+    unique_messages: dict[str, str] = {}
+    for item in sorted_opps:
+        if item['msg'] not in unique_messages:
+            unique_messages[item['msg']] = item['msg']
+    return list(unique_messages.values())[:limit]
+
+def format_baseball_opportunity_alert(op: ArbitrageOpportunity) -> str:
+    poly_total = op.poly_spend + op.poly_fees
+    return (
+        f"⚾ BASEBALL ARB ALERT ⚾\n\n"
+        f"MATCHUP: {op.home_team} vs {op.away_team}\n"
+        f"DATE: {op.commence_time}\n"
+        f"MARKET: {op.market_title}\n"
+        f"NET PROFIT MARGIN: {op.expected_profit_percent:.2f}%\n\n"
+        f"EXECUTION CALCULATOR (${op.total_outlay:.2f} Bankroll):\n"
+        f"TARGET PAYOUT ON BOTH SIDES: ${op.shares:.2f}\n"
+        f"▪️ Bet ${op.sportsbook_stake:.2f} on '{op.fiat_selection}' at {op.bookmaker} ({op.odds_decimal:.2f})\n"
+        f"▪️ Enter ${poly_total:.2f} on Poly for '{op.selection_name}'\n\n"
+        f"✅ GUARANTEED NET PROFIT: ${op.locked_profit:.2f}"
+    )
+
+def format_baseball_fiat_opportunity_alert(op: FiatArbitrageOpportunity) -> str:
+    net_profit = op.payout - (op.stake_1 + op.stake_2)
+    return (
+        f"⚾ BASEBALL TRADITIONAL FIAT ARB ⚾\n\n"
+        f"MATCHUP: {op.home_team} vs {op.away_team}\n"
+        f"DATE: {op.commence_time}\n"
+        f"MARKET: {op.market_title}\n"
+        f"NET PROFIT MARGIN: {op.expected_profit_percent:.2f}%\n\n"
+        f"HEDGE CALCULATOR (${(op.stake_1 + op.stake_2):.2f} Bankroll):\n"
+        f"TARGET PAYOUT ON BOTH SIDES: ${op.payout:.2f}\n"
+        f"▪️ Bet ${op.stake_1:.2f} on '{op.selection_1}' at {op.bookmaker_1} ({op.odds_1:.2f})\n"
+        f"▪️ Bet ${op.stake_2:.2f} on '{op.selection_2}' at {op.bookmaker_2} ({op.odds_2:.2f})\n\n"
+        f"✅ GUARANTEED NET PROFIT: ${net_profit:.2f}"
+    )
