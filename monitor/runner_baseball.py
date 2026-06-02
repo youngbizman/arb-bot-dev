@@ -17,6 +17,8 @@ from .alerts import build_baseball_global_alerts
 logger = logging.getLogger(__name__)
 getcontext().prec = 28
 BASEBALL_MAX_ROI = 15.0
+BASEBALL_STALE_SECONDS = 300
+BASEBALL_START_BUFFER_MINUTES = 10
 
 @dataclass(frozen=True)
 class BookLevel:
@@ -166,6 +168,23 @@ def get_spread_odds(bookie: dict, selection: str, point: float) -> Optional[Deci
             return odds
     return None
 
+def get_spread_odds_for_team(bookie: dict, selection: str, point: float, home: str, away: str) -> Optional[tuple[str, Decimal]]:
+    odds_by_team = bookie.get("spreads", {}).get(round(float(point), 1), {})
+    expected_team = resolve_outcome_team(selection, home, away)
+    if not expected_team:
+        return None
+
+    for name, odds in odds_by_team.items():
+        resolved_name = resolve_outcome_team(name, home, away)
+        if resolved_name == expected_team:
+            return resolved_name, odds
+    return None
+
+def is_same_bookmaker(b1: dict, b2: dict) -> bool:
+    left = str(b1.get("key") or b1.get("name") or "").strip().lower()
+    right = str(b2.get("key") or b2.get("name") or "").strip().lower()
+    return bool(left and right and left == right)
+
 def load_json_list(value) -> list:
     if isinstance(value, list):
         return value
@@ -222,13 +241,18 @@ def run_baseball() -> None:
         fiat_games = {}
         now_utc = datetime.now(timezone.utc)
         cutoff_date = now_utc + timedelta(days=7)
+        actionable_start_cutoff = now_utc + timedelta(minutes=BASEBALL_START_BUFFER_MINUTES)
 
         for game in raw_odds:
             commence_str = game.get("commence_time")
             if not commence_str:
                 continue
             commence_utc = datetime.fromisoformat(commence_str.replace("Z", "+00:00"))
-            if commence_utc <= now_utc or commence_utc > cutoff_date:
+            if commence_utc <= actionable_start_cutoff or commence_utc > cutoff_date:
+                if commence_utc <= now_utc:
+                    logger.info(f"   [SKIP] Live/started game removed: {game.get('home_team')} vs {game.get('away_team')} | {format_to_local(commence_str)}")
+                elif commence_utc <= actionable_start_cutoff:
+                    logger.info(f"   [SKIP] Near-start game removed: {game.get('home_team')} vs {game.get('away_team')} | {format_to_local(commence_str)}")
                 continue
 
             h, a = game.get("home_team"), game.get("away_team")
@@ -244,14 +268,16 @@ def run_baseball() -> None:
                 }
 
             for b in game.get("bookmakers", []):
+                if commence_utc <= actionable_start_cutoff:
+                    continue
                 last_update_str = b.get("last_update")
                 if last_update_str:
                     last_update = datetime.fromisoformat(last_update_str.replace("Z", "+00:00"))
                     age_seconds = (now_utc - last_update).total_seconds()
-                    if age_seconds > 1200:
+                    if age_seconds > BASEBALL_STALE_SECONDS:
                         continue
 
-                b_data = {"name": b.get("title"), "h2h": {}, "totals": {}, "spreads": {}}
+                b_data = {"key": b.get("key"), "name": b.get("title"), "h2h": {}, "totals": {}, "spreads": {}}
                 for m in b.get("markets", []):
                     mk = m.get("key")
                     for o in m.get("outcomes", []):
@@ -286,6 +312,8 @@ def run_baseball() -> None:
             for i in range(len(x["bookies"])):
                 for j in range(i + 1, len(x["bookies"])):
                     b1, b2 = x["bookies"][i], x["bookies"][j]
+                    if is_same_bookmaker(b1, b2):
+                        continue
 
                     for sel, o1 in b1["h2h"].items():
                         matched = resolve_outcome_team(sel, h, a)
@@ -324,7 +352,15 @@ def run_baseball() -> None:
                             if not matched:
                                 continue
                             opp_team = opposing_team(matched, h, a)
-                            o2 = get_spread_odds(b2, opp_team, -pt)
+                            resolved = get_spread_odds_for_team(b2, opp_team, -pt, h, a)
+                            if not resolved:
+                                continue
+                            resolved_team, o2 = resolved
+                            if resolved_team != opp_team:
+                                continue
+                            if matched == resolved_team:
+                                logger.info(f"   [RL] Validator | Status: ❌ Rejected same-team run-line pair {matched} {format_point(pt)} / {resolved_team} {format_point(-pt)}")
+                                continue
                             if o1 and o2:
                                 imp = (Decimal("1") / o1) + (Decimal("1") / o2)
                                 if imp < 1:
@@ -427,7 +463,15 @@ def run_baseball() -> None:
                                 continue
                             poly_point = anchor_point if matched == anchor_team else -anchor_point
                             opp_team = opposing_team(matched, h, a)
-                            f_opp = get_spread_odds(b, opp_team, -poly_point)
+                            resolved = get_spread_odds_for_team(b, opp_team, -poly_point, h, a)
+                            if not resolved:
+                                continue
+                            resolved_team, f_opp = resolved
+                            if resolved_team != opp_team:
+                                continue
+                            if matched == resolved_team:
+                                logger.info(f"   [RL] Validator | Status: ❌ Rejected same-team Poly/fiat run-line pair {matched} {format_point(poly_point)} / {resolved_team} {format_point(-poly_point)}")
+                                continue
                             if f_opp:
                                 book = clients.get_clob_book(toks[idx])
                                 hedge = evaluate_buy_hedge_from_asks(book.get("asks", []), f_opp)
