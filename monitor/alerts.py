@@ -221,7 +221,6 @@ def build_baseball_global_alerts(poly_opps: list[ArbitrageOpportunity], fiat_opp
     return list(unique_messages.values())[:limit]
 
 def format_baseball_opportunity_alert(op: ArbitrageOpportunity) -> str:
-    poly_total = op.poly_spend + op.poly_fees
     return (
         f"⚾ BASEBALL ARB ALERT ⚾\n\n"
         f"MATCHUP: {op.home_team} vs {op.away_team}\n"
@@ -231,7 +230,9 @@ def format_baseball_opportunity_alert(op: ArbitrageOpportunity) -> str:
         f"EXECUTION CALCULATOR (${op.total_outlay:.2f} Bankroll):\n"
         f"TARGET PAYOUT ON BOTH SIDES: ${op.shares:.2f}\n"
         f"▪️ Bet ${op.sportsbook_stake:.2f} on '{op.fiat_selection}' at {op.bookmaker} ({op.odds_decimal:.2f})\n"
-        f"▪️ Enter ${poly_total:.2f} on Poly for '{op.selection_name}'\n\n"
+        f"▪️ Enter ${op.poly_spend:.2f} on Poly for '{op.selection_name}' "
+        f"(target {op.shares:.2f} shares, avg ${op.vwap:.3f})\n"
+        f"▪️ Estimated Poly fees: ${op.poly_fees:.2f}\n\n"
         f"✅ GUARANTEED NET PROFIT: ${op.locked_profit:.2f}"
     )
 
