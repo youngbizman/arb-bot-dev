@@ -19,6 +19,8 @@ getcontext().prec = 28
 BASEBALL_MAX_ROI = 15.0
 BASEBALL_STALE_SECONDS = 300
 BASEBALL_START_BUFFER_MINUTES = 10
+BASEBALL_POLY_TIME_TOLERANCE_SECONDS = 1800
+BASEBALL_POLY_MARKET_TYPES = {"moneyline", "totals", "spreads"}
 
 @dataclass(frozen=True)
 class BookLevel:
@@ -167,6 +169,52 @@ def get_spread_odds(bookie: dict, selection: str, point: float) -> Optional[Deci
         if is_team_match(selection, name) or is_team_match(name, selection):
             return odds
     return None
+
+def parse_utc_datetime(value) -> Optional[datetime]:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+def get_poly_market_start(event: dict, market: dict) -> Optional[datetime]:
+    for source in (market, event):
+        for key in ("gameStartTime", "startTime"):
+            parsed = parse_utc_datetime(source.get(key))
+            if parsed:
+                return parsed
+    return None
+
+def is_poly_time_match(commence_utc: datetime, event: dict, market: dict) -> bool:
+    poly_start = get_poly_market_start(event, market)
+    if not poly_start:
+        return False
+    delta = abs((poly_start - commence_utc).total_seconds())
+    return delta <= BASEBALL_POLY_TIME_TOLERANCE_SECONDS
+
+def is_poly_market_actionable(event: dict, market: dict, now_utc: datetime) -> bool:
+    if event.get("live") is True:
+        return False
+    if event.get("closed") or market.get("closed"):
+        return False
+    if event.get("active") is False or market.get("active") is False:
+        return False
+    if not market.get("acceptingOrders") or not market.get("enableOrderBook", True):
+        return False
+
+    poly_start = get_poly_market_start(event, market)
+    if not poly_start:
+        return False
+    return poly_start > now_utc + timedelta(minutes=BASEBALL_START_BUFFER_MINUTES)
 
 def get_spread_odds_for_team(bookie: dict, selection: str, point: float, home: str, away: str) -> Optional[tuple[str, Decimal]]:
     odds_by_team = bookie.get("spreads", {}).get(round(float(point), 1), {})
@@ -370,20 +418,47 @@ def run_baseball() -> None:
 
             # 2. Poly Scanner (Moneyline, totals, and run line)
             target_markets = []
+            team_matched_poly_markets = 0
+            seen_poly_market_ids: set[str] = set()
+            fiat_commence_utc = parse_utc_datetime(x["time"])
+            if not fiat_commence_utc:
+                logger.info("   [ML] Polymarket | Status: ❌ Missing fiat start time")
+                continue
+
             for e in raw_poly:
                 event_title = e.get("title", "")
-                if is_matchup_match(h, a, event_title):
-                    for m in e.get("markets", []):
-                        target_markets.append((e, m))
-                    continue
+                event_title_matches = is_matchup_match(h, a, event_title)
+
                 for m in e.get("markets", []):
                     market_text = f"{m.get('question', '')} {m.get('groupItemTitle', '')}"
-                    if is_matchup_match(h, a, market_text):
-                        target_markets.append((e, m))
+                    if not event_title_matches and not is_matchup_match(h, a, market_text):
+                        continue
+
+                    team_matched_poly_markets += 1
+                    market_type = str(m.get("sportsMarketType", "")).lower()
+                    if market_type not in BASEBALL_POLY_MARKET_TYPES:
+                        continue
+                    if not is_poly_market_actionable(e, m, now_utc):
+                        continue
+                    if not is_poly_time_match(fiat_commence_utc, e, m):
+                        continue
+
+                    market_id = str(m.get("id") or m.get("conditionId") or m.get("questionID") or "")
+                    if market_id and market_id in seen_poly_market_ids:
+                        continue
+                    if market_id:
+                        seen_poly_market_ids.add(market_id)
+
+                    target_markets.append((e, m))
 
             if not target_markets:
-                logger.info("   [ML] Polymarket | Status: ❌ No matching market found")
+                if team_matched_poly_markets:
+                    logger.info("   [ML] Polymarket | Status: ❌ Same matchup found, but no time-matched actionable market")
+                else:
+                    logger.info("   [ML] Polymarket | Status: ❌ No matching market found")
                 continue
+
+            logger.info(f"   [INFO] Polymarket time-matched markets: {len(target_markets)}")
 
             for b in x["bookies"]:
                 for target, m in target_markets:
@@ -395,7 +470,7 @@ def run_baseball() -> None:
                     market_context = f"{question} {group_title}"
 
                     outs, toks = load_json_list(m.get("outcomes")), load_json_list(m.get("clobTokenIds"))
-                    if not outs or not toks:
+                    if not outs or not toks or len(outs) != len(toks):
                         continue
 
                     if mt == "moneyline":
