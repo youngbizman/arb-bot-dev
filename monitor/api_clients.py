@@ -49,11 +49,6 @@ POPULAR_TENNIS_SPORT_KEYS = (
 
 POPULAR_BASEBALL_SPORT_KEYS = (
     "baseball_mlb",
-    "baseball_mlb_preseason",
-    "baseball_milb",
-    "baseball_npb",
-    "baseball_kbo",
-    "baseball_ncaa",
 )
 
 class ApiClients:
