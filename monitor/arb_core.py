@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from decimal import Decimal, getcontext
+from decimal import Decimal, InvalidOperation, getcontext
 from typing import Optional
 
 getcontext().prec = 28
@@ -12,6 +12,14 @@ def q_from_decimal(odds) -> Decimal:
     if o <= 1:
         raise ValueError("decimal odds must be > 1")
     return ONE / o
+
+
+def _valid_decimal_odds(odds) -> Optional[Decimal]:
+    try:
+        value = Decimal(str(odds))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return value if value > 1 else None
 
 
 def q_from_polymarket(price, fee_rate="0.03") -> Decimal:
@@ -88,6 +96,9 @@ def fiat_fiat_legs_from_books(game: dict, bookies: list, bankroll="1000", max_ro
     src: dict[str, str] = {}
     for book in bookies:
         for selection, odds in book.get("h2h", {}).items():
+            odds_d = _valid_decimal_odds(odds)
+            if odds_d is None:
+                continue
             if selection == home:
                 key = "Home"
             elif selection == away:
@@ -96,7 +107,6 @@ def fiat_fiat_legs_from_books(game: dict, bookies: list, bankroll="1000", max_ro
                 key = "Draw"
             else:
                 continue
-            odds_d = Decimal(str(odds))
             if ml[key] is None or odds_d > ml[key]:
                 ml[key] = odds_d
                 src[key] = book["name"]
@@ -116,7 +126,9 @@ def fiat_fiat_legs_from_books(game: dict, bookies: list, bankroll="1000", max_ro
             row = lines.setdefault(line, {"Over": None, "Under": None, "src": {}})
             for raw, canonical in (("over", "Over"), ("under", "Under")):
                 if raw in sides:
-                    odds_d = Decimal(str(sides[raw]))
+                    odds_d = _valid_decimal_odds(sides[raw])
+                    if odds_d is None:
+                        continue
                     if row[canonical] is None or odds_d > row[canonical]:
                         row[canonical] = odds_d
                         row["src"][canonical] = book["name"]
@@ -135,7 +147,9 @@ def fiat_fiat_legs_from_books(game: dict, bookies: list, bankroll="1000", max_ro
     for book in bookies:
         for raw, canonical in (("yes", "Yes"), ("no", "No")):
             if raw in book.get("btts", {}):
-                odds_d = Decimal(str(book["btts"][raw]))
+                odds_d = _valid_decimal_odds(book["btts"][raw])
+                if odds_d is None:
+                    continue
                 if btts[canonical] is None or odds_d > btts[canonical]:
                     btts[canonical] = odds_d
                     btts["src"][canonical] = book["name"]
