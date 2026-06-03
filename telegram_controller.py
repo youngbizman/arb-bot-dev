@@ -1,17 +1,14 @@
 import logging
+import os
 import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # --- CONFIGURATION ---
-# Your unique bot token from BotFather
-TELEGRAM_TOKEN = "8586430735:AAFR16Gw8QZ-JqCIMRMBiM-_VonyevW4f-k"
-
-# Your GitHub credentials for alirezas7/arb-bot
-GITHUB_TOKEN = "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"
-GITHUB_OWNER = "youngbizman"
-# FIXED: Updated to match your actual repository name in GitHub
-GITHUB_REPO = "arb-bot"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
+GITHUB_TOKEN = os.getenv("GH_DISPATCH_TOKEN", "").strip()
+GITHUB_OWNER = os.getenv("GITHUB_OWNER", "youngbizman").strip()
+GITHUB_REPO = os.getenv("GITHUB_REPO", "arb-bot-dev").strip()
 
 # FIXED: Updated to match your actual .yml filenames in your workflows folder
 WORKFLOWS = {
@@ -65,6 +62,11 @@ class TelegramController:
         await self.trigger_workflow(update, "ufc")
 
 if __name__ == "__main__":
+    if not TELEGRAM_TOKEN:
+        raise RuntimeError("Missing TELEGRAM_TOKEN")
+    if not GITHUB_TOKEN:
+        raise RuntimeError("Missing GH_DISPATCH_TOKEN")
+
     controller = TelegramController()
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
