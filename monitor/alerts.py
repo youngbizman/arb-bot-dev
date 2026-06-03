@@ -115,11 +115,18 @@ def format_mma_fiat_opportunity_alert(op: FiatArbitrageOpportunity) -> str:
 # ==========================================
 # SOCCER / FOOTBALL ALERT BUILDERS
 # ==========================================
-def build_soccer_global_alerts(poly_opps: list[ArbitrageOpportunity], fiat_opps: list[FiatArbitrageOpportunity], limit: int = 3) -> list[str]:
+def build_soccer_global_alerts(
+    poly_opps: list[ArbitrageOpportunity],
+    fiat_opps: list[FiatArbitrageOpportunity],
+    limit: int = 3,
+    extra_alerts: list[dict] | None = None,
+) -> list[str]:
     if limit <= 0: return []
     all_opps = []
     for o in poly_opps: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_soccer_opportunity_alert(o)})
     for o in fiat_opps: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_soccer_fiat_opportunity_alert(o)})
+    for item in extra_alerts or []:
+        all_opps.append({'profit': item.get('profit', 0), 'msg': item.get('msg', '')})
     sorted_opps = sorted(all_opps, key=lambda x: x['profit'], reverse=True)
     
     unique_messages: dict[str, str] = {}
@@ -130,6 +137,7 @@ def build_soccer_global_alerts(poly_opps: list[ArbitrageOpportunity], fiat_opps:
 
 def format_soccer_opportunity_alert(op: ArbitrageOpportunity) -> str:
     poly_total = op.poly_spend + op.poly_fees
+    venue = "Kalshi" if str(op.selection_name).lower().startswith("kalshi") else "Poly"
     return (
         f"⚽ SOCCER ARB ALERT ⚽\n\n"
         f"🏟️ MATCHUP: {op.home_team} vs {op.away_team}\n"
@@ -139,7 +147,7 @@ def format_soccer_opportunity_alert(op: ArbitrageOpportunity) -> str:
         f"🛠️ EXECUTION CALCULATOR (${op.total_outlay:.2f} Bankroll):\n"
         f"💰 TARGET PAYOUT ON BOTH SIDES: ${op.shares:.2f}\n"
         f"▪️ Bet ${op.sportsbook_stake:.2f} on '{op.fiat_selection}' at {op.bookmaker} ({op.odds_decimal:.2f})\n"
-        f"▪️ Enter ${poly_total:.2f} on Poly for '{op.selection_name}'\n\n"
+        f"▪️ Enter ${poly_total:.2f} on {venue} for '{op.selection_name}'\n\n"
         f"✅ GUARANTEED NET PROFIT: ${op.locked_profit:.2f}"
     )
 
