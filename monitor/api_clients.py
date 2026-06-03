@@ -1,5 +1,7 @@
 from __future__ import annotations
 import logging
+import re
+from datetime import datetime, timezone
 from typing import Any
 import requests
 from requests.adapters import HTTPAdapter
@@ -50,6 +52,18 @@ POPULAR_TENNIS_SPORT_KEYS = (
 POPULAR_BASEBALL_SPORT_KEYS = (
     "baseball_mlb",
 )
+
+API_FOOTBALL_BASE_URL = "https://v3.football.api-sports.io"
+API_FOOTBALL_FRIENDLIES_LEAGUE_ID = 10
+API_FOOTBALL_BOOKMAKERS = {
+    4: "Pinnacle",
+    11: "1xBet",
+}
+API_FOOTBALL_SOCCER_BETS = {
+    1: "h2h",
+    5: "totals",
+    8: "btts",
+}
 
 class ApiClients:
     def __init__(self, settings: Settings) -> None:
@@ -313,6 +327,11 @@ class ApiClients:
 
     # --- SOCCER / FOOTBALL METHODS ---
     def get_soccer_fiat_data(self) -> list[dict[str, Any]]:
+        events = self._get_soccer_world_cup_odds()
+        events.extend(self.get_soccer_friendlies_fiat_data())
+        return events
+
+    def _get_soccer_world_cup_odds(self) -> list[dict[str, Any]]:
         league = "soccer_fifa_world_cup"
         url = f"https://api.the-odds-api.com/v4/sports/{league}/odds"
         params = {
@@ -339,6 +358,222 @@ class ApiClients:
         except Exception as exc:
             logger.error(f"Soccer Odds API request failed for {league}: {exc}")
         return []
+
+    def get_soccer_friendlies_fiat_data(self) -> list[dict[str, Any]]:
+        if not self.settings.api_football_key:
+            logger.info("   [INFO] API-Football Friendlies disabled: missing API_FOOTBALL_KEY.")
+            return []
+
+        season = datetime.now(timezone.utc).year
+        raw_events = self._get_api_football_friendlies_odds(season)
+        if not raw_events:
+            return []
+
+        fixture_details = self._get_api_football_fixtures_by_ids(raw_events.keys())
+        converted_events: list[dict[str, Any]] = []
+
+        for fixture_id, raw_event in raw_events.items():
+            fixture_detail = fixture_details.get(fixture_id)
+            if not fixture_detail:
+                continue
+
+            fixture = fixture_detail.get("fixture", {})
+            status = fixture.get("status", {})
+            if status.get("short") not in {"NS", "TBD"}:
+                continue
+
+            teams = fixture_detail.get("teams", {})
+            home_team = teams.get("home", {}).get("name")
+            away_team = teams.get("away", {}).get("name")
+            if not home_team or not away_team:
+                continue
+
+            event = {
+                "id": f"api-football-{fixture_id}",
+                "sport_key": "soccer_friendlies",
+                "sport_title": "Friendlies",
+                "commence_time": fixture.get("date") or raw_event.get("commence_time"),
+                "home_team": home_team,
+                "away_team": away_team,
+                "bookmakers": [],
+            }
+
+            for bookmaker_id, raw_bookmaker in raw_event.get("bookmakers", {}).items():
+                markets = []
+                for bet_id, values in raw_bookmaker.get("bets", {}).items():
+                    market = self._api_football_bet_to_market(bet_id, values, home_team, away_team)
+                    if market:
+                        markets.append(market)
+
+                if markets:
+                    event["bookmakers"].append({
+                        "key": f"api_football_{bookmaker_id}",
+                        "title": raw_bookmaker.get("name"),
+                        "last_update": raw_bookmaker.get("last_update"),
+                        "markets": markets,
+                    })
+
+            if event["bookmakers"]:
+                converted_events.append(event)
+
+        logger.info(f"   [INFO] API-Football Friendlies: {len(converted_events)} events.")
+        return converted_events
+
+    def _get_api_football_friendlies_odds(self, season: int) -> dict[str, dict[str, Any]]:
+        by_fixture: dict[str, dict[str, Any]] = {}
+
+        for bookmaker_id, bookmaker_name in API_FOOTBALL_BOOKMAKERS.items():
+            for bet_id in API_FOOTBALL_SOCCER_BETS:
+                page = 1
+
+                while True:
+                    payload = self._get_api_football_json("odds", {
+                        "league": API_FOOTBALL_FRIENDLIES_LEAGUE_ID,
+                        "season": season,
+                        "bookmaker": bookmaker_id,
+                        "bet": bet_id,
+                        "page": page,
+                    })
+                    error_message = self._api_football_error_message(payload)
+                    if error_message:
+                        logger.info(
+                            f"   [INFO] API-Football Friendlies unavailable "
+                            f"({bookmaker_name}, bet {bet_id}): {error_message}"
+                        )
+                        if "plan" in error_message.lower():
+                            return {}
+                        break
+
+                    for row in payload.get("response", []):
+                        fixture_id = str(row.get("fixture", {}).get("id", "")).strip()
+                        if not fixture_id:
+                            continue
+
+                        raw_event = by_fixture.setdefault(fixture_id, {
+                            "commence_time": row.get("fixture", {}).get("date"),
+                            "bookmakers": {},
+                        })
+                        raw_bookmaker = raw_event["bookmakers"].setdefault(bookmaker_id, {
+                            "name": bookmaker_name,
+                            "last_update": row.get("update"),
+                            "bets": {},
+                        })
+                        raw_bookmaker["last_update"] = row.get("update") or raw_bookmaker.get("last_update")
+
+                        for bookmaker in row.get("bookmakers", []):
+                            for bet in bookmaker.get("bets", []):
+                                if bet.get("id") == bet_id:
+                                    raw_bookmaker["bets"][bet_id] = bet.get("values", [])
+
+                    paging = payload.get("paging", {})
+                    total_pages = int(paging.get("total") or 1)
+                    if page >= total_pages:
+                        break
+                    page += 1
+
+        return by_fixture
+
+    def _get_api_football_fixtures_by_ids(self, fixture_ids: Any) -> dict[str, dict[str, Any]]:
+        fixture_id_list = list(dict.fromkeys(str(fixture_id) for fixture_id in fixture_ids))
+        fixtures: dict[str, dict[str, Any]] = {}
+
+        for index in range(0, len(fixture_id_list), 20):
+            ids_param = "-".join(fixture_id_list[index:index + 20])
+            payload = self._get_api_football_json("fixtures", {"ids": ids_param})
+            error_message = self._api_football_error_message(payload)
+            if error_message:
+                logger.info(f"   [INFO] API-Football fixture lookup unavailable: {error_message}")
+                continue
+
+            for row in payload.get("response", []):
+                fixture_id = str(row.get("fixture", {}).get("id", "")).strip()
+                if fixture_id:
+                    fixtures[fixture_id] = row
+
+        return fixtures
+
+    def _api_football_bet_to_market(
+        self,
+        bet_id: int,
+        values: list[dict[str, Any]],
+        home_team: str,
+        away_team: str,
+    ) -> dict[str, Any] | None:
+        outcomes = []
+
+        if bet_id == 1:
+            for value in values:
+                selection = str(value.get("value", "")).strip().lower()
+                if selection == "home":
+                    name = home_team
+                elif selection == "away":
+                    name = away_team
+                elif selection == "draw":
+                    name = "Draw"
+                else:
+                    continue
+
+                odd = value.get("odd")
+                if odd is not None:
+                    outcomes.append({"name": name, "price": str(odd)})
+
+            return {"key": "h2h", "outcomes": outcomes} if outcomes else None
+
+        if bet_id == 5:
+            for value in values:
+                line_match = re.match(r"^(over|under)\s+(\d+(?:\.\d+)?)$", str(value.get("value", "")).strip(), re.I)
+                if not line_match:
+                    continue
+
+                odd = value.get("odd")
+                if odd is not None:
+                    outcomes.append({
+                        "name": line_match.group(1).title(),
+                        "price": str(odd),
+                        "point": float(line_match.group(2)),
+                    })
+
+            return {"key": "totals", "outcomes": outcomes} if outcomes else None
+
+        if bet_id == 8:
+            for value in values:
+                selection = str(value.get("value", "")).strip().title()
+                if selection not in {"Yes", "No"}:
+                    continue
+
+                odd = value.get("odd")
+                if odd is not None:
+                    outcomes.append({"name": selection, "price": str(odd)})
+
+            return {"key": "btts", "outcomes": outcomes} if outcomes else None
+
+        return None
+
+    def _get_api_football_json(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
+        url = f"{API_FOOTBALL_BASE_URL}/{endpoint.lstrip('/')}"
+        try:
+            response = self.session.get(
+                url,
+                params=params,
+                headers={"x-apisports-key": self.settings.api_football_key or ""},
+                timeout=self.settings.request_timeout_seconds,
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            logger.error(f"API-Football request failed for {endpoint}: {exc}")
+            return {}
+
+    def _api_football_error_message(self, payload: dict[str, Any]) -> str:
+        errors = payload.get("errors")
+        if not errors:
+            return ""
+        if isinstance(errors, dict):
+            return "; ".join(f"{key}: {value}" for key, value in errors.items())
+        if isinstance(errors, list):
+            return "; ".join(str(value) for value in errors)
+        return str(errors)
 
     def _get_soccer_event_odds(self, league: str, event_id: str, markets: str) -> dict[str, Any]:
         url = f"https://api.the-odds-api.com/v4/sports/{league}/events/{event_id}/odds"

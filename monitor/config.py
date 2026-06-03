@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass
+from typing import Optional
 
 
 class ConfigError(ValueError):
@@ -24,6 +25,7 @@ def _get_int(name: str, default: int) -> int:
 @dataclass(frozen=True)
 class Settings:
     odds_api_key: str
+    api_football_key: Optional[str]
     telegram_bot_token: str
     telegram_chat_id: str
     request_timeout_seconds: int
@@ -33,6 +35,7 @@ class Settings:
 def load_settings() -> Settings:
     return Settings(
         odds_api_key=_require_env("ODDS_API_KEY"),
+        api_football_key=os.getenv("API_FOOTBALL_KEY", "").strip() or None,
         telegram_bot_token=_require_env("TELEGRAM_TOKEN"),
         telegram_chat_id=_require_env("TELEGRAM_CHAT_ID"),
         request_timeout_seconds=_get_int("REQUEST_TIMEOUT_SECONDS", 15),

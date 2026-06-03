@@ -140,7 +140,7 @@ def run_soccer() -> None:
         fiat_games = {}
         now_utc = datetime.now(timezone.utc)
         cutoff_date = now_utc + timedelta(days=45)
-        logger.info(f"   [INFO] Odds API returned {len(raw_odds)} World Cup events.")
+        logger.info(f"   [INFO] Soccer fiat feed returned {len(raw_odds)} events.")
         logger.info(f"   [INFO] Polymarket returned {len(raw_poly)} active events.")
 
         for game in raw_odds:
@@ -191,7 +191,7 @@ def run_soccer() -> None:
                             b_data["btts"][nm.lower()] = Decimal(str(pr))
                 if b_data["h2h"] or b_data["totals"] or b_data["btts"]:
                     fiat_games[k]["bookies"].append(b_data)
-        logger.info(f"   [INFO] Built {len(fiat_games)} fiat World Cup games inside 45-day window.")
+        logger.info(f"   [INFO] Built {len(fiat_games)} fiat soccer games inside 45-day window.")
 
         opportunities, fiat_opportunities = [], []
         for gk, x in fiat_games.items():
