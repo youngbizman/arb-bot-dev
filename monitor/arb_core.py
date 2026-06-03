@@ -94,6 +94,8 @@ def fiat_fiat_legs_from_books(game: dict, bookies: list, bankroll="1000", max_ro
 
     ml = {"Home": None, "Draw": None, "Away": None}
     src: dict[str, str] = {}
+    dc = {"1X": None, "X2": None, "12": None}
+    dc_src: dict[str, str] = {}
     for book in bookies:
         for selection, odds in book.get("h2h", {}).items():
             odds_d = _valid_decimal_odds(odds)
@@ -111,6 +113,16 @@ def fiat_fiat_legs_from_books(game: dict, bookies: list, bankroll="1000", max_ro
                 ml[key] = odds_d
                 src[key] = book["name"]
 
+        for selection, odds in book.get("double_chance", {}).items():
+            if selection not in dc:
+                continue
+            odds_d = _valid_decimal_odds(odds)
+            if odds_d is None:
+                continue
+            if dc[selection] is None or odds_d > dc[selection]:
+                dc[selection] = odds_d
+                dc_src[selection] = book["name"]
+
     if all(ml[key] is not None for key in ml):
         legs = [
             Leg(key, src[key], q_from_decimal(ml[key]), ml[key], Decimal("1e9"))
@@ -119,6 +131,22 @@ def fiat_fiat_legs_from_books(game: dict, bookies: list, bankroll="1000", max_ro
         result = solve_nway(["Home", "Draw", "Away"], legs, bankroll, max_roi=max_roi)
         if result.is_arb:
             results.append(("3-WAY ML", result))
+
+    dc_pairs = (
+        ("DOUBLE CHANCE 1X + AWAY ML", "1X", "Away"),
+        ("DOUBLE CHANCE X2 + HOME ML", "X2", "Home"),
+        ("DOUBLE CHANCE 12 + DRAW ML", "12", "Draw"),
+    )
+    for label, dc_key, ml_key in dc_pairs:
+        if dc[dc_key] is None or ml[ml_key] is None:
+            continue
+        legs = [
+            Leg(dc_key, dc_src[dc_key], q_from_decimal(dc[dc_key]), dc[dc_key], Decimal("1e9")),
+            Leg(ml_key, src[ml_key], q_from_decimal(ml[ml_key]), ml[ml_key], Decimal("1e9")),
+        ]
+        result = solve_nway([dc_key, ml_key], legs, bankroll, max_roi=max_roi)
+        if result.is_arb:
+            results.append((label, result))
 
     lines: dict = {}
     for book in bookies:
