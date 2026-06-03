@@ -10,6 +10,8 @@ from .config import Settings
 
 logger = logging.getLogger(__name__)
 
+SOCCER_REGIONS = "eu,uk,us"
+
 POPULAR_TENNIS_SPORT_KEYS = (
     "tennis_atp_aus_open_singles",
     "tennis_atp_french_open",
@@ -69,6 +71,7 @@ class ApiClients:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.session = self._build_session()
+        self._clob_cache: dict[str, dict[str, Any]] = {}
 
     def _build_session(self) -> requests.Session:
         session = requests.Session()
@@ -117,24 +120,34 @@ class ApiClients:
             return []
 
     # --- SHARED POLYMARKET CLOB METHOD ---
-    def get_clob_book(self, token_id: str) -> dict[str, Any]:
-        if not str(token_id).strip(): return {"asks": [], "bids": [], "timestamp": "0"}
-        
-        # REVERTED: Back to the stable V1 structure that perfectly handles the data
-        url = "https://clob.polymarket.com/book"
-        params = {"token_id": token_id}
-        
-        try:
-            data = self._get_json(url, params=params)
-            if not isinstance(data, dict): return {"asks": [], "bids": [], "timestamp": "0"}
-            return {
-                "asks": data.get("asks", []),
-                "bids": data.get("bids", []),
-                "timestamp": data.get("timestamp", "0")
-            }
-        except Exception as exc:
-            logger.warning(f"CLOB request failed for token {token_id}: {exc}")
+    def get_clob_book(self, token_id: str, use_cache: bool = True) -> dict[str, Any]:
+        key = str(token_id).strip()
+        if not key:
             return {"asks": [], "bids": [], "timestamp": "0"}
+        if use_cache and key in self._clob_cache:
+            return self._clob_cache[key]
+
+        url = "https://clob.polymarket.com/book"
+        try:
+            data = self._get_json(url, params={"token_id": key})
+            if isinstance(data, dict):
+                result = {
+                    "asks": data.get("asks", []),
+                    "bids": data.get("bids", []),
+                    "timestamp": data.get("timestamp", "0"),
+                }
+            else:
+                result = {"asks": [], "bids": [], "timestamp": "0"}
+        except Exception as exc:
+            logger.warning(f"CLOB request failed for token {key}: {exc}")
+            result = {"asks": [], "bids": [], "timestamp": "0"}
+
+        if use_cache:
+            self._clob_cache[key] = result
+        return result
+
+    def clear_clob_cache(self) -> None:
+        self._clob_cache.clear()
 
     # --- SHARED TELEGRAM SENDER ---
     def send_telegram_alert(self, message: str) -> bool:
@@ -337,18 +350,19 @@ class ApiClients:
         params = {
             "apiKey": self.settings.odds_api_key,
             "markets": "h2h,totals",
-            "bookmakers": "pinnacle,onexbet",
+            "regions": SOCCER_REGIONS,
             "oddsFormat": "decimal",
         }
         try:
             data = self._get_json(url, params=params)
             if isinstance(data, list):
+                additional_markets = {"btts", "double_chance", "alternate_totals"}
                 for event in data:
                     event_id = event.get("id")
                     if not event_id:
                         continue
-                    event_odds = self._get_soccer_event_odds(league, event_id, "btts")
-                    self._merge_event_markets(event, event_odds, {"btts"})
+                    event_odds = self._get_soccer_event_odds(league, event_id, ",".join(additional_markets))
+                    self._merge_event_markets(event, event_odds, additional_markets)
                 return data
         except requests.exceptions.HTTPError as exc:
             if exc.response is not None and exc.response.status_code == 404:
@@ -575,12 +589,18 @@ class ApiClients:
             return "; ".join(str(value) for value in errors)
         return str(errors)
 
-    def _get_soccer_event_odds(self, league: str, event_id: str, markets: str) -> dict[str, Any]:
+    def _get_soccer_event_odds(
+        self,
+        league: str,
+        event_id: str,
+        markets: str,
+        regions: str = SOCCER_REGIONS,
+    ) -> dict[str, Any]:
         url = f"https://api.the-odds-api.com/v4/sports/{league}/events/{event_id}/odds"
         params = {
             "apiKey": self.settings.odds_api_key,
             "markets": markets,
-            "bookmakers": "pinnacle,onexbet",
+            "regions": regions,
             "oddsFormat": "decimal",
         }
         try:
