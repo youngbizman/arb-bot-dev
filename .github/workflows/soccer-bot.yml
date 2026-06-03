@@ -27,4 +27,5 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+          KALSHI_SERIES_TICKERS: ${{ vars.KALSHI_SERIES_TICKERS }}
         run: python main_soccer.py
