@@ -316,18 +316,25 @@ def run_soccer() -> None:
                     for o in m.get('outcomes', []):
                         nm, pr = o.get('name'), o.get('price')
                         pt = o.get('point')
-                        if mk == 'h2h' and pr is not None:
-                            b_data["h2h"][nm] = Decimal(str(pr))
-                        elif mk in ('totals', 'alternate_totals') and pr is not None and pt is not None:
+                        try:
+                            price = Decimal(str(pr)) if pr is not None else None
+                        except Exception:
+                            price = None
+                        if price is None or price <= Decimal("1"):
+                            continue
+
+                        if mk == 'h2h':
+                            b_data["h2h"][nm] = price
+                        elif mk in ('totals', 'alternate_totals') and pt is not None:
                             pt_float = float(pt)
                             if pt_float not in b_data["totals"]: b_data["totals"][pt_float] = {}
-                            b_data["totals"][pt_float][nm.lower()] = Decimal(str(pr))
-                        elif mk == 'btts' and pr is not None:
-                            b_data["btts"][nm.lower()] = Decimal(str(pr))
-                        elif mk == 'double_chance' and pr is not None:
+                            b_data["totals"][pt_float][nm.lower()] = price
+                        elif mk == 'btts':
+                            b_data["btts"][nm.lower()] = price
+                        elif mk == 'double_chance':
                             dc_key = normalize_double_chance_outcome(str(nm), h, a)
                             if dc_key:
-                                b_data["double_chance"][dc_key] = Decimal(str(pr))
+                                b_data["double_chance"][dc_key] = price
                 if b_data["h2h"] or b_data["totals"] or b_data["btts"] or b_data["double_chance"]:
                     fiat_games[k]["bookies"].append(b_data)
         logger.info(f"   [INFO] Built {len(fiat_games)} fiat soccer games inside 45-day window.")
