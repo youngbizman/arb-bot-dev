@@ -28,6 +28,19 @@ getcontext().prec = 28
 SOCCER_MAX_ROI = 15.0
 ALLOWED_FIAT_BOOKMAKER_KEYS = {"pinnacle", "onexbet"}
 EMPTY_CLOB_BOOK = {"asks": [], "bids": [], "timestamp": "0"}
+TOURNAMENT_EVENT_KEYWORDS = (
+    "world cup",
+    "fifa",
+    "euros",
+    "euro 202",
+    "uefa european championship",
+    "copa america",
+    "afcon",
+    "gold cup",
+    "nations league",
+)
+POLY_EVENT_MATCH_FIELDS = ("title", "slug", "description", "seriesSlug")
+POLY_MARKET_MATCH_FIELDS = ("question", "slug", "groupItemTitle", "title", "description")
 
 @dataclass(frozen=True)
 class BookLevel:
@@ -201,13 +214,23 @@ def _parse_dt(value) -> Optional[datetime]:
     except Exception:
         return None
 
+def _join_text_fields(source: dict, fields: Iterable[str]) -> str:
+    return " ".join(str(source.get(field, "")) for field in fields if source.get(field))
+
+def is_tournament_container_event(event: dict) -> bool:
+    text = clean_for_matching(_join_text_fields(event, POLY_EVENT_MATCH_FIELDS))
+    return any(clean_for_matching(keyword) in text for keyword in TOURNAMENT_EVENT_KEYWORDS)
+
+def _poly_market_dt(market: dict) -> Optional[datetime]:
+    return _parse_dt(market.get("gameStartTime"))
+
 def _poly_event_dt(event: dict) -> Optional[datetime]:
-    for key in ("startDate", "endDate", "gameStartTime"):
-        dt = _parse_dt(event.get(key))
+    for market in event.get("markets", []):
+        dt = _poly_market_dt(market)
         if dt:
             return dt
-    for market in event.get("markets", []):
-        dt = _parse_dt(market.get("gameStartTime"))
+    for key in ("startDate", "endDate", "gameStartTime"):
+        dt = _parse_dt(event.get(key))
         if dt:
             return dt
     return None
@@ -218,6 +241,56 @@ def is_same_fixture_time(fiat_time: str, poly_event: dict, max_hours: int = 36) 
     if not fiat_dt or not poly_dt:
         return True
     return abs((poly_dt - fiat_dt).total_seconds()) <= max_hours * 3600
+
+def is_same_market_time(fiat_time: str, market: dict, max_hours: int = 36) -> bool:
+    fiat_dt = _parse_dt(fiat_time)
+    market_dt = _poly_market_dt(market)
+    if not fiat_dt or not market_dt:
+        return True
+    return abs((market_dt - fiat_dt).total_seconds()) <= max_hours * 3600
+
+def poly_market_mentions_fixture(market: dict, home: str, away: str) -> bool:
+    market_text = _join_text_fields(market, POLY_MARKET_MATCH_FIELDS)
+    return is_team_match(home, market_text) and is_team_match(away, market_text)
+
+def event_copy_with_markets(event: dict, markets: list[dict]) -> dict:
+    target = dict(event)
+    target["markets"] = markets
+    for market in markets:
+        game_start = market.get("gameStartTime")
+        if game_start:
+            target["gameStartTime"] = game_start
+            break
+    return target
+
+def match_polymarket_fixture(event: dict, home: str, away: str, fiat_time: str) -> tuple[Optional[dict], str]:
+    tournament_container = is_tournament_container_event(event)
+    matched_markets = [
+        market
+        for market in event.get("markets", [])
+        if poly_market_mentions_fixture(market, home, away)
+        and (
+            is_same_market_time(fiat_time, market)
+            or (tournament_container and _poly_market_dt(market) is None)
+        )
+    ]
+    if matched_markets:
+        return event_copy_with_markets(event, matched_markets), (
+            "nested tournament market" if tournament_container else "nested fixture market"
+        )
+
+    if tournament_container:
+        return None, ""
+
+    event_text = _join_text_fields(event, POLY_EVENT_MATCH_FIELDS)
+    if (
+        is_team_match(home, event_text)
+        and is_team_match(away, event_text)
+        and is_same_fixture_time(fiat_time, event)
+    ):
+        return event, "event title"
+
+    return None, ""
 
 def parse_poly_total_market(question: str) -> tuple[Optional[float], Optional[str]]:
     text = str(question).lower()
@@ -691,30 +764,20 @@ def run_soccer() -> None:
                 extra_alerts.append({"profit": float(result.roi * Decimal("100")), "msg": msg})
 
             target = None
+            match_reason = ""
             for e in raw_poly:
-                if (
-                    is_team_match(h_nk, e.get('title', ''))
-                    and is_team_match(a_nk, e.get('title', ''))
-                    and is_same_fixture_time(x["time"], e)
-                ):
-                    target = e
+                target, match_reason = match_polymarket_fixture(e, h_nk, a_nk, x["time"])
+                if target:
                     break
-                for m in e.get('markets', []):
-                    market_text = f"{m.get('question', '')} {m.get('groupItemTitle', '')}"
-                    if (
-                        is_team_match(h_nk, market_text)
-                        and is_team_match(a_nk, market_text)
-                        and is_same_fixture_time(x["time"], e)
-                    ):
-                        target = e
-                        break
-                if target: break
 
             poly_books: dict[str, dict[str, Any]] = {}
             if target:
                 scan_stats["poly_matches"] += 1
                 poly_books = prefetch_polymarket_books(clients, target)
-                logger.info(f"   [SCAN] Polymarket match found: {summarize_poly_markets(target, h_nk, a_nk) or 'no accepting markets'}")
+                logger.info(
+                    f"   [SCAN] Polymarket match found via {match_reason}: "
+                    f"{summarize_poly_markets(target, h_nk, a_nk) or 'no accepting markets'}"
+                )
                 logger.info(f"   [SCAN] Prefetched {len(poly_books)} Polymarket CLOB books.")
                 maybe_add_mixed_ml_alert(poly_books, x, target, extra_alerts)
             else:
