@@ -28,6 +28,7 @@ getcontext().prec = 28
 SOCCER_MAX_ROI = 15.0
 ALLOWED_FIAT_BOOKMAKER_KEYS = {"pinnacle", "onexbet"}
 EMPTY_CLOB_BOOK = {"asks": [], "bids": [], "timestamp": "0"}
+MATCHED_SOCCER_EVENT_MARKETS = ("alternate_totals", "btts", "double_chance")
 TOURNAMENT_EVENT_KEYWORDS = (
     "world cup",
     "fifa",
@@ -365,6 +366,143 @@ def get_synthetic_double_chance_against_team(bookie: dict, team: str, home: str,
         return None, ""
     return Decimal("1") / ((Decimal("1") / opp_odds) + (Decimal("1") / draw_odds)), f"Draw or {opponent}"
 
+def empty_fiat_bookie(raw_bookmaker: dict) -> dict:
+    return {
+        "key": raw_bookmaker.get("key"),
+        "name": raw_bookmaker.get("title") or raw_bookmaker.get("key"),
+        "h2h": {},
+        "totals": {},
+        "btts": {},
+        "double_chance": {},
+        "draw_no_bet": {},
+        "spreads": {},
+        "team_totals": {},
+    }
+
+def fiat_bookie_has_markets(bookie: dict) -> bool:
+    return any(
+        bookie.get(key)
+        for key in ("h2h", "totals", "btts", "double_chance", "draw_no_bet", "spreads", "team_totals")
+    )
+
+def parse_soccer_fiat_bookmaker(raw_bookmaker: dict, home: str, away: str) -> Optional[dict]:
+    b_data = empty_fiat_bookie(raw_bookmaker)
+    for market in raw_bookmaker.get("markets", []):
+        mk = market.get("key")
+        for outcome in market.get("outcomes", []):
+            nm, pr = outcome.get("name"), outcome.get("price")
+            pt = outcome.get("point")
+            try:
+                price = Decimal(str(pr)) if pr is not None else None
+            except Exception:
+                price = None
+            if price is None or price <= Decimal("1"):
+                continue
+
+            if mk in ("h2h", "h2h_3_way"):
+                if str(nm).lower() == "draw":
+                    b_data["h2h"]["Draw"] = price
+                else:
+                    team = canonical_team_from_label(str(nm), home, away)
+                    if team:
+                        b_data["h2h"][team] = price
+            elif mk in ("totals", "alternate_totals") and pt is not None:
+                pt_float = float(pt)
+                b_data["totals"].setdefault(pt_float, {})[str(nm).lower()] = price
+            elif mk == "btts":
+                side = str(nm).lower()
+                if side in {"yes", "no"}:
+                    b_data["btts"][side] = price
+            elif mk == "double_chance":
+                dc_key = normalize_double_chance_outcome(str(nm), home, away)
+                if dc_key:
+                    b_data["double_chance"][dc_key] = price
+            elif mk == "draw_no_bet":
+                team = canonical_team_from_label(str(nm), home, away)
+                if team:
+                    b_data["draw_no_bet"][team] = price
+            elif mk in ("spreads", "alternate_spreads") and pt is not None:
+                team = canonical_team_from_label(str(nm), home, away)
+                if team:
+                    pt_float = float(pt)
+                    b_data["spreads"].setdefault(pt_float, {})[team] = price
+            elif mk in ("team_totals", "alternate_team_totals") and pt is not None:
+                team = canonical_team_from_label(
+                    str(outcome.get("description") or outcome.get("team") or nm),
+                    home,
+                    away,
+                )
+                side = str(nm).lower()
+                if team and side in {"over", "under"}:
+                    pt_float = float(pt)
+                    b_data["team_totals"].setdefault(team, {}).setdefault(pt_float, {})[side] = price
+
+    return b_data if fiat_bookie_has_markets(b_data) else None
+
+def set_best_price(container: dict, key, price: Decimal) -> None:
+    current = container.get(key)
+    if current is None or price > current:
+        container[key] = price
+
+def merge_fiat_bookie(existing: dict, incoming: dict) -> None:
+    for market_key in ("h2h", "btts", "double_chance", "draw_no_bet"):
+        for selection, price in incoming.get(market_key, {}).items():
+            set_best_price(existing.setdefault(market_key, {}), selection, price)
+
+    for line, sides in incoming.get("totals", {}).items():
+        target = existing.setdefault("totals", {}).setdefault(line, {})
+        for side, price in sides.items():
+            set_best_price(target, side, price)
+
+    for point, sides in incoming.get("spreads", {}).items():
+        target = existing.setdefault("spreads", {}).setdefault(point, {})
+        for team, price in sides.items():
+            set_best_price(target, team, price)
+
+    for team, lines in incoming.get("team_totals", {}).items():
+        target_team = existing.setdefault("team_totals", {}).setdefault(team, {})
+        for line, sides in lines.items():
+            target_line = target_team.setdefault(line, {})
+            for side, price in sides.items():
+                set_best_price(target_line, side, price)
+
+def merge_fiat_bookie_into_game(game: dict, incoming: dict) -> None:
+    incoming_key = incoming.get("key")
+    incoming_name = incoming.get("name")
+    for existing in game.get("bookies", []):
+        if (
+            incoming_key
+            and existing.get("key")
+            and str(existing.get("key")).lower() == str(incoming_key).lower()
+        ) or (
+            incoming_name
+            and existing.get("name")
+            and str(existing.get("name")).lower() == str(incoming_name).lower()
+        ):
+            merge_fiat_bookie(existing, incoming)
+            return
+    game.setdefault("bookies", []).append(incoming)
+
+def enrich_soccer_game_with_event_markets(clients: ApiClients, game: dict) -> int:
+    event_id = game.get("event_id")
+    if not event_id:
+        return 0
+
+    event_odds = clients.get_soccer_world_cup_event_markets(event_id, MATCHED_SOCCER_EVENT_MARKETS)
+    if event_odds.get("_error_status"):
+        return 0
+
+    added = 0
+    for raw_bookmaker in event_odds.get("bookmakers", []):
+        bookmaker_key = str(raw_bookmaker.get("key", "")).lower()
+        if bookmaker_key not in ALLOWED_FIAT_BOOKMAKER_KEYS:
+            continue
+        parsed = parse_soccer_fiat_bookmaker(raw_bookmaker, game["home"], game["away"])
+        if parsed:
+            merge_fiat_bookie_into_game(game, parsed)
+            added += 1
+    return added
+
 def get_no_draw_odds(bookie: dict, home: str, away: str) -> tuple[Optional[Decimal], str]:
     direct = bookie.get("double_chance", {}).get("12")
     if direct:
@@ -648,7 +786,8 @@ def run_soccer() -> None:
             k = f"{clean_for_matching(h)}_{clean_for_matching(a)}"
             if k not in fiat_games: 
                 fiat_games[k] = {
-                    "home": h, "away": a, "time": commence_str, 
+                    "event_id": game.get("id"),
+                    "home": h, "away": a, "time": commence_str,
                     "sport_key": game.get('sport_key', 'soccer'), "bookies": []
                 }
                 
@@ -673,76 +812,9 @@ def run_soccer() -> None:
                     if not is_live and age_seconds > 1200: 
                         continue
 
-                b_data = {
-                    "name": b.get("title"),
-                    "h2h": {},
-                    "totals": {},
-                    "btts": {},
-                    "double_chance": {},
-                    "draw_no_bet": {},
-                    "spreads": {},
-                    "team_totals": {},
-                }
-                for m in b.get("markets", []):
-                    mk = m.get('key')
-                    for o in m.get('outcomes', []):
-                        nm, pr = o.get('name'), o.get('price')
-                        pt = o.get('point')
-                        try:
-                            price = Decimal(str(pr)) if pr is not None else None
-                        except Exception:
-                            price = None
-                        if price is None or price <= Decimal("1"):
-                            continue
-
-                        if mk in ('h2h', 'h2h_3_way'):
-                            if str(nm).lower() == "draw":
-                                b_data["h2h"]["Draw"] = price
-                            else:
-                                team = canonical_team_from_label(str(nm), h, a)
-                                if team:
-                                    b_data["h2h"][team] = price
-                        elif mk in ('totals', 'alternate_totals') and pt is not None:
-                            pt_float = float(pt)
-                            if pt_float not in b_data["totals"]: b_data["totals"][pt_float] = {}
-                            b_data["totals"][pt_float][nm.lower()] = price
-                        elif mk == 'btts':
-                            b_data["btts"][nm.lower()] = price
-                        elif mk == 'double_chance':
-                            dc_key = normalize_double_chance_outcome(str(nm), h, a)
-                            if dc_key:
-                                b_data["double_chance"][dc_key] = price
-                        elif mk == 'draw_no_bet':
-                            team = canonical_team_from_label(str(nm), h, a)
-                            if team:
-                                b_data["draw_no_bet"][team] = price
-                        elif mk in ('spreads', 'alternate_spreads') and pt is not None:
-                            team = canonical_team_from_label(str(nm), h, a)
-                            if team:
-                                pt_float = float(pt)
-                                if pt_float not in b_data["spreads"]:
-                                    b_data["spreads"][pt_float] = {}
-                                b_data["spreads"][pt_float][team] = price
-                        elif mk in ('team_totals', 'alternate_team_totals') and pt is not None:
-                            team = canonical_team_from_label(
-                                str(o.get("description") or o.get("team") or nm),
-                                h,
-                                a,
-                            )
-                            side = str(nm).lower()
-                            if team and side in {"over", "under"}:
-                                pt_float = float(pt)
-                                b_data["team_totals"].setdefault(team, {}).setdefault(pt_float, {})[side] = price
-                if (
-                    b_data["h2h"]
-                    or b_data["totals"]
-                    or b_data["btts"]
-                    or b_data["double_chance"]
-                    or b_data["draw_no_bet"]
-                    or b_data["spreads"]
-                    or b_data["team_totals"]
-                ):
-                    fiat_games[k]["bookies"].append(b_data)
+                b_data = parse_soccer_fiat_bookmaker(b, h, a)
+                if b_data:
+                    merge_fiat_bookie_into_game(fiat_games[k], b_data)
         logger.info(f"   [INFO] Built {len(fiat_games)} World Cup fiat games inside 45-day window.")
 
         opportunities, fiat_opportunities, extra_alerts = [], [], []
@@ -752,6 +824,28 @@ def run_soccer() -> None:
             h_nk, a_nk = x["home"], x["away"]
             logger.info(f"\n⚽ MATCHED: {x['home']} vs {x['away']} | Local Time: {format_to_local(x['time'])}")
             logger.info("-" * 80)
+            target = None
+            match_reason = ""
+            for e in raw_poly:
+                target, match_reason = match_polymarket_fixture(e, h_nk, a_nk, x["time"])
+                if target:
+                    break
+
+            poly_books: dict[str, dict[str, Any]] = {}
+            if target:
+                scan_stats["poly_matches"] += 1
+                advanced_books = enrich_soccer_game_with_event_markets(clients, x)
+                poly_books = prefetch_polymarket_books(clients, target)
+                logger.info(f"   [SCAN] Advanced fiat event markets merged from {advanced_books} books.")
+                logger.info(
+                    f"   [SCAN] Polymarket match found via {match_reason}: "
+                    f"{summarize_poly_markets(target, h_nk, a_nk) or 'no accepting markets'}"
+                )
+                logger.info(f"   [SCAN] Prefetched {len(poly_books)} Polymarket CLOB books.")
+            else:
+                scan_stats["poly_missing"] += 1
+                logger.info("   [SCAN] Polymarket match not found; Polymarket checks skipped for this fixture")
+
             logger.info(f"   [SCAN] Fiat markets available: {summarize_fiat_markets(x['bookies'])}")
 
             fiat_results = fiat_fiat_legs_from_books(x, x["bookies"], bankroll="1000")
@@ -763,26 +857,8 @@ def run_soccer() -> None:
                 logger.info(msg.replace("\n", " | "))
                 extra_alerts.append({"profit": float(result.roi * Decimal("100")), "msg": msg})
 
-            target = None
-            match_reason = ""
-            for e in raw_poly:
-                target, match_reason = match_polymarket_fixture(e, h_nk, a_nk, x["time"])
-                if target:
-                    break
-
-            poly_books: dict[str, dict[str, Any]] = {}
             if target:
-                scan_stats["poly_matches"] += 1
-                poly_books = prefetch_polymarket_books(clients, target)
-                logger.info(
-                    f"   [SCAN] Polymarket match found via {match_reason}: "
-                    f"{summarize_poly_markets(target, h_nk, a_nk) or 'no accepting markets'}"
-                )
-                logger.info(f"   [SCAN] Prefetched {len(poly_books)} Polymarket CLOB books.")
                 maybe_add_mixed_ml_alert(poly_books, x, target, extra_alerts)
-            else:
-                scan_stats["poly_missing"] += 1
-                logger.info("   [SCAN] Polymarket match not found; Polymarket checks skipped for this fixture")
                         
             for kalshi_market in matching_kalshi_markets(raw_kalshi, h_nk, a_nk):
                 ticker = kalshi_market.get("ticker")
