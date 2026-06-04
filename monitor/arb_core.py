@@ -22,6 +22,14 @@ def _valid_decimal_odds(odds) -> Optional[Decimal]:
     return value if value > 1 else None
 
 
+def _is_half_point(point) -> bool:
+    try:
+        value = abs(Decimal(str(point)))
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+    return value % ONE == Decimal("0.5")
+
+
 def q_from_polymarket(price, fee_rate="0.03") -> Decimal:
     p, r = Decimal(str(price)), Decimal(str(fee_rate))
     return p + r * p * (ONE - p)
@@ -191,21 +199,80 @@ def fiat_fiat_legs_from_books(game: dict, bookies: list, bankroll="1000", max_ro
         if result.is_arb:
             results.append(("BTTS", result))
 
+    spreads: dict[tuple[str, Decimal], dict] = {}
+    for book in bookies:
+        for point, sides in book.get("spreads", {}).items():
+            if not _is_half_point(point):
+                continue
+            point_d = Decimal(str(point))
+            for selection, odds in sides.items():
+                odds_d = _valid_decimal_odds(odds)
+                if odds_d is None:
+                    continue
+                key = (str(selection), point_d)
+                current = spreads.setdefault(key, {"odds": None, "src": None})
+                if current["odds"] is None or odds_d > current["odds"]:
+                    current["odds"] = odds_d
+                    current["src"] = book["name"]
+
+    home, away = game["home"], game["away"]
+    for (selection, point), row in list(spreads.items()):
+        if selection != home:
+            continue
+        opposite = spreads.get((away, -point))
+        if not opposite or row["odds"] is None or opposite["odds"] is None:
+            continue
+        home_label = f"{home} {point:+g}"
+        away_label = f"{away} {-point:+g}"
+        legs = [
+            Leg(home_label, row["src"], q_from_decimal(row["odds"]), row["odds"], Decimal("1e9")),
+            Leg(away_label, opposite["src"], q_from_decimal(opposite["odds"]), opposite["odds"], Decimal("1e9")),
+        ]
+        result = solve_nway([home_label, away_label], legs, bankroll, max_roi=max_roi)
+        if result.is_arb:
+            results.append((f"SPREAD {home_label} / {away_label}", result))
+
+    team_totals: dict[tuple[str, Decimal], dict] = {}
+    for book in bookies:
+        for team, lines_by_team in book.get("team_totals", {}).items():
+            for line, sides in lines_by_team.items():
+                row = team_totals.setdefault((str(team), Decimal(str(line))), {"Over": None, "Under": None, "src": {}})
+                for raw, canonical in (("over", "Over"), ("under", "Under")):
+                    if raw in sides:
+                        odds_d = _valid_decimal_odds(sides[raw])
+                        if odds_d is None:
+                            continue
+                        if row[canonical] is None or odds_d > row[canonical]:
+                            row[canonical] = odds_d
+                            row["src"][canonical] = book["name"]
+
+    for (team, line), row in team_totals.items():
+        if row["Over"] is not None and row["Under"] is not None:
+            over_label = f"{team} Over {line:g}"
+            under_label = f"{team} Under {line:g}"
+            legs = [
+                Leg(over_label, row["src"]["Over"], q_from_decimal(row["Over"]), row["Over"], Decimal("1e9")),
+                Leg(under_label, row["src"]["Under"], q_from_decimal(row["Under"]), row["Under"], Decimal("1e9")),
+            ]
+            result = solve_nway([over_label, under_label], legs, bankroll, max_roi=max_roi)
+            if result.is_arb:
+                results.append((f"TEAM TOTAL {team} {line:g}", result))
+
     return results
 
 
 def format_nway_alert(game: dict, label: str, result: ArbResult) -> str:
     lines = [
-        "SOCCER FIAT-vs-FIAT ARB",
-        f"MATCHUP: {game['home']} vs {game['away']}",
-        f"DATE: {game.get('time', '')[:16]}",
-        f"MARKET: {label}",
-        f"ROI: {result.roi:.2%} | PROFIT: ${result.net_profit:.2f} on ${result.total_outlay:.2f}",
+        "⚽ WORLD CUP SOCCER MULTI-LEG ARB ⚽",
+        f"🏟️ MATCHUP: {game['home']} vs {game['away']}",
+        f"📅 DATE: {game.get('time', '')[:16]}",
+        f"🎯 MARKET: {label}",
+        f"💵 ROI: {result.roi:.2%} | PROFIT: ${result.net_profit:.2f} on ${result.total_outlay:.2f}",
         "",
     ]
     for outcome in result.stakes:
         leg = result.legs[outcome]
-        lines.append(f"Bet ${result.stakes[outcome]:.2f} on '{outcome}' at {leg.venue} ({leg.quote})")
+        lines.append(f"▪️ Bet ${result.stakes[outcome]:.2f} on '{outcome}' at {leg.venue} ({leg.quote})")
     lines.append("")
-    lines.append(f"GUARANTEED PAYOUT: ${result.guaranteed_payout:.2f}")
+    lines.append(f"✅ GUARANTEED PAYOUT: ${result.guaranteed_payout:.2f}")
     return "\n".join(lines)

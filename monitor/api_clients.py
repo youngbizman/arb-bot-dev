@@ -1,8 +1,9 @@
 from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterable
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -10,7 +11,23 @@ from .config import Settings
 
 logger = logging.getLogger(__name__)
 
+FIAT_BOOKMAKERS = "pinnacle,onexbet"
+FIAT_BOOKMAKER_KEYS = tuple(FIAT_BOOKMAKERS.split(","))
+CLOB_MAX_WORKERS = 16
+EMPTY_CLOB_BOOK = {"asks": [], "bids": [], "timestamp": "0"}
+
 SOCCER_REGIONS = "eu,uk,us"
+SOCCER_PRIMARY_MARKETS = "h2h,totals,spreads"
+SOCCER_EVENT_MARKETS = (
+    "alternate_totals",
+    "btts",
+    "double_chance",
+    "draw_no_bet",
+    "h2h_3_way",
+    "team_totals",
+    "alternate_team_totals",
+    "alternate_spreads",
+)
 
 POPULAR_TENNIS_SPORT_KEYS = (
     "tennis_atp_aus_open_singles",
@@ -80,7 +97,11 @@ class ApiClients:
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=frozenset(["GET", "POST"]),
         )
-        adapter = HTTPAdapter(max_retries=retry)
+        adapter = HTTPAdapter(
+            max_retries=retry,
+            pool_connections=CLOB_MAX_WORKERS,
+            pool_maxsize=CLOB_MAX_WORKERS,
+        )
         session.mount("https://", adapter)
         session.mount("http://", adapter)
         session.headers.update({"User-Agent": "arb-bot/2.0"})
@@ -98,7 +119,7 @@ class ApiClients:
             "apiKey": self.settings.odds_api_key,
             "regions": "eu,us",
             "markets": "h2h,totals,spreads",
-            "bookmakers": "pinnacle,onexbet",
+            "bookmakers": FIAT_BOOKMAKERS,
         }
         try:
             data = self._get_json(url, params=params)
@@ -123,10 +144,49 @@ class ApiClients:
     def get_clob_book(self, token_id: str, use_cache: bool = True) -> dict[str, Any]:
         key = str(token_id).strip()
         if not key:
-            return {"asks": [], "bids": [], "timestamp": "0"}
+            return EMPTY_CLOB_BOOK.copy()
         if use_cache and key in self._clob_cache:
             return self._clob_cache[key]
 
+        result = self._fetch_clob_book(key)
+        if use_cache:
+            self._clob_cache[key] = result
+        return result
+
+    def get_clob_books(
+        self,
+        token_ids: Iterable[str],
+        use_cache: bool = True,
+        max_workers: int = CLOB_MAX_WORKERS,
+    ) -> dict[str, dict[str, Any]]:
+        keys = list(dict.fromkeys(str(token_id).strip() for token_id in token_ids if str(token_id).strip()))
+        books: dict[str, dict[str, Any]] = {}
+        missing: list[str] = []
+
+        for key in keys:
+            if use_cache and key in self._clob_cache:
+                books[key] = self._clob_cache[key]
+            else:
+                missing.append(key)
+
+        if missing:
+            workers = max(1, min(max_workers, len(missing)))
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {executor.submit(self._fetch_clob_book, key): key for key in missing}
+                for future in as_completed(futures):
+                    key = futures[future]
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        logger.warning(f"CLOB request failed for token {key}: {exc}")
+                        result = EMPTY_CLOB_BOOK.copy()
+                    books[key] = result
+                    if use_cache:
+                        self._clob_cache[key] = result
+
+        return books
+
+    def _fetch_clob_book(self, key: str) -> dict[str, Any]:
         url = "https://clob.polymarket.com/book"
         try:
             data = self._get_json(url, params={"token_id": key})
@@ -137,13 +197,10 @@ class ApiClients:
                     "timestamp": data.get("timestamp", "0"),
                 }
             else:
-                result = {"asks": [], "bids": [], "timestamp": "0"}
+                result = EMPTY_CLOB_BOOK.copy()
         except Exception as exc:
             logger.warning(f"CLOB request failed for token {key}: {exc}")
-            result = {"asks": [], "bids": [], "timestamp": "0"}
-
-        if use_cache:
-            self._clob_cache[key] = result
+            result = EMPTY_CLOB_BOOK.copy()
         return result
 
     def clear_clob_cache(self) -> None:
@@ -172,7 +229,7 @@ class ApiClients:
             "apiKey": self.settings.odds_api_key,
             "regions": "eu,us",
             "markets": "h2h,totals", 
-            "bookmakers": "pinnacle,onexbet",
+            "bookmakers": FIAT_BOOKMAKERS,
         }
         try:
             data = self._get_json(url, params=params)
@@ -224,7 +281,7 @@ class ApiClients:
                 "apiKey": self.settings.odds_api_key,
                 "regions": "eu,us",
                 "markets": "h2h,totals,spreads",
-                "bookmakers": "pinnacle,onexbet",
+                "bookmakers": FIAT_BOOKMAKERS,
                 "oddsFormat": "decimal",
             }
             try:
@@ -284,7 +341,7 @@ class ApiClients:
                 "apiKey": self.settings.odds_api_key,
                 "regions": "eu,us",
                 "markets": "h2h,totals,spreads",
-                "bookmakers": "pinnacle,onexbet",
+                "bookmakers": FIAT_BOOKMAKERS,
                 "oddsFormat": "decimal",
             }
             try:
@@ -340,30 +397,36 @@ class ApiClients:
 
     # --- SOCCER / FOOTBALL METHODS ---
     def get_soccer_fiat_data(self) -> list[dict[str, Any]]:
-        events = self._get_soccer_world_cup_odds()
-        events.extend(self.get_soccer_friendlies_fiat_data())
-        return events
+        return self._get_soccer_world_cup_odds()
+
+    def _filter_fiat_bookmakers(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        allowed = set(FIAT_BOOKMAKER_KEYS)
+        filtered_events: list[dict[str, Any]] = []
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            filtered_event = dict(event)
+            filtered_event["bookmakers"] = [
+                bookmaker
+                for bookmaker in event.get("bookmakers", [])
+                if str(bookmaker.get("key", "")).lower() in allowed
+            ]
+            filtered_events.append(filtered_event)
+        return filtered_events
 
     def _get_soccer_world_cup_odds(self) -> list[dict[str, Any]]:
         league = "soccer_fifa_world_cup"
         url = f"https://api.the-odds-api.com/v4/sports/{league}/odds"
         params = {
             "apiKey": self.settings.odds_api_key,
-            "markets": "h2h,totals",
-            "regions": SOCCER_REGIONS,
+            "markets": SOCCER_PRIMARY_MARKETS,
+            "bookmakers": FIAT_BOOKMAKERS,
             "oddsFormat": "decimal",
         }
         try:
             data = self._get_json(url, params=params)
             if isinstance(data, list):
-                additional_markets = {"btts", "double_chance", "alternate_totals"}
-                for event in data:
-                    event_id = event.get("id")
-                    if not event_id:
-                        continue
-                    event_odds = self._get_soccer_event_odds(league, event_id, ",".join(additional_markets))
-                    self._merge_event_markets(event, event_odds, additional_markets)
-                return data
+                return self._filter_fiat_bookmakers(data)
         except requests.exceptions.HTTPError as exc:
             if exc.response is not None and exc.response.status_code == 404:
                 logger.info(f"   [INFO] ⚽ {league} is currently inactive (404). Skipping safely...")
@@ -372,6 +435,16 @@ class ApiClients:
         except Exception as exc:
             logger.error(f"Soccer Odds API request failed for {league}: {exc}")
         return []
+
+    def get_soccer_world_cup_event_markets(
+        self,
+        event_id: str,
+        markets: Iterable[str] = SOCCER_EVENT_MARKETS,
+    ) -> dict[str, Any]:
+        market_keys = ",".join(dict.fromkeys(str(market).strip() for market in markets if str(market).strip()))
+        if not event_id or not market_keys:
+            return {}
+        return self._get_soccer_event_odds("soccer_fifa_world_cup", event_id, market_keys)
 
     def get_soccer_friendlies_fiat_data(self) -> list[dict[str, Any]]:
         if not self.settings.api_football_key:
@@ -594,21 +667,26 @@ class ApiClients:
         league: str,
         event_id: str,
         markets: str,
-        regions: str = SOCCER_REGIONS,
     ) -> dict[str, Any]:
         url = f"https://api.the-odds-api.com/v4/sports/{league}/events/{event_id}/odds"
         params = {
             "apiKey": self.settings.odds_api_key,
             "markets": markets,
-            "regions": regions,
+            "bookmakers": FIAT_BOOKMAKERS,
             "oddsFormat": "decimal",
         }
         try:
             data = self._get_json(url, params=params)
-            return data if isinstance(data, dict) else {}
+            if not isinstance(data, dict):
+                return {}
+            data = dict(data)
+            data["bookmakers"] = self._filter_fiat_bookmakers([data])[0].get("bookmakers", [])
+            return data
         except requests.exceptions.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else "unknown"
-            logger.info(f"   [INFO] ⚽ Event odds unavailable for {event_id} ({markets}, HTTP {status}). Skipping...")
+            if status != 401:
+                logger.info(f"   [INFO] ⚽ Event odds unavailable for {event_id} ({markets}, HTTP {status}). Skipping...")
+            return {"_error_status": status}
         except Exception as exc:
             logger.error(f"Soccer event odds request failed for {event_id} ({markets}): {exc}")
         return {}

@@ -139,7 +139,7 @@ def format_soccer_opportunity_alert(op: ArbitrageOpportunity) -> str:
     poly_total = op.poly_spend + op.poly_fees
     venue = "Kalshi" if str(op.selection_name).lower().startswith("kalshi") else "Poly"
     return (
-        f"⚽ SOCCER ARB ALERT ⚽\n\n"
+        f"⚽ WORLD CUP SOCCER ARB ALERT ⚽\n\n"
         f"🏟️ MATCHUP: {op.home_team} vs {op.away_team}\n"
         f"📅 DATE: {op.commence_time}\n"
         f"🎯 MARKET: {op.market_title}\n"
@@ -154,7 +154,7 @@ def format_soccer_opportunity_alert(op: ArbitrageOpportunity) -> str:
 def format_soccer_fiat_opportunity_alert(op: FiatArbitrageOpportunity) -> str:
     net_profit = op.payout - (op.stake_1 + op.stake_2)
     return (
-        f"⚽ SOCCER TRADITIONAL FIAT ARB ⚽\n\n"
+        f"⚽ WORLD CUP SOCCER TRADITIONAL FIAT ARB ⚽\n\n"
         f"🏟️ MATCHUP: {op.home_team} vs {op.away_team}\n"
         f"📅 DATE: {op.commence_time}\n"
         f"🎯 MARKET: {op.market_title}\n"
