@@ -3,7 +3,7 @@ name: Baseball Arbitrage Sniper
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 * * * *' # Runs every hour
+    - cron: '0 0 * * 6' # Runs weekly on Saturdays
 
 jobs:
   run-bot:

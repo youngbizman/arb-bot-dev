@@ -3,7 +3,7 @@ name: UFC Arbitrage Sniper
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * 6' # Runs weekly on Saturdays
+    - cron: '*/5 * * * *' # Runs every 5 minutes
 
 jobs:
   run-bot:

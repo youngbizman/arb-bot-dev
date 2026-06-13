@@ -71,8 +71,10 @@ def build_no_opportunities_message() -> str:
 def build_mma_global_alerts(poly_opps: list[ArbitrageOpportunity], fiat_opps: list[FiatArbitrageOpportunity], limit: int = 3) -> list[str]:
     if limit <= 0: return []
     all_opps = []
-    for o in poly_opps: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_mma_opportunity_alert(o)})
-    for o in fiat_opps: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_mma_fiat_opportunity_alert(o)})
+    for o in poly_opps:
+        if 0 < o.expected_profit_percent < 5.0: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_mma_opportunity_alert(o)})
+    for o in fiat_opps:
+        if 0 < o.expected_profit_percent < 5.0: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_mma_fiat_opportunity_alert(o)})
     sorted_opps = sorted(all_opps, key=lambda x: x['profit'], reverse=True)
     
     unique_messages: dict[str, str] = {}
@@ -218,8 +220,10 @@ def format_tennis_fiat_opportunity_alert(op: FiatArbitrageOpportunity) -> str:
 def build_baseball_global_alerts(poly_opps: list[ArbitrageOpportunity], fiat_opps: list[FiatArbitrageOpportunity], limit: int = 3) -> list[str]:
     if limit <= 0: return []
     all_opps = []
-    for o in poly_opps: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_baseball_opportunity_alert(o)})
-    for o in fiat_opps: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_baseball_fiat_opportunity_alert(o)})
+    for o in poly_opps:
+        if 0 < o.expected_profit_percent < 5.0: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_baseball_opportunity_alert(o)})
+    for o in fiat_opps:
+        if 0 < o.expected_profit_percent < 5.0: all_opps.append({'profit': o.expected_profit_percent, 'msg': format_baseball_fiat_opportunity_alert(o)})
     sorted_opps = sorted(all_opps, key=lambda x: x['profit'], reverse=True)
 
     unique_messages: dict[str, str] = {}
